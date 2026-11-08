@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "matbus-telegram-bot",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-08",
+  "kv_namespaces": [
+    {
+      "binding": "BOT_KV",
+      "id": "956d47ee27c64000b098b4a5cb666baa"
+    }
+  ],
+  "vars": {
+    "MATBUS_URL": "",
+    "OWNER_TELEGRAM_ID":"1155556889"
+  }
+}
