@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, ScrollView, View } from 'react-native';
-import { Text } from '../components/Typography';
+import { Text, TextInput } from '../components/Typography';
 import { useInsets } from '../hooks/useInsets';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassButton, GlassCard } from '../components/Glass';
@@ -14,12 +14,18 @@ import { loadTransitData } from '../data/dataSource';
 import { DAY_LABEL } from '../models/stop';
 import { PLACE_META, RoutePlace, pointOf } from '../models/place';
 import { distanceMeters, formatDistance } from '../services/geo';
-import { dayTypeOf, formatTime, minutesOfDay } from '../services/schedule';
+import { addCalendarDays, dateChipLabel, dateLongLabel, dayTypeOf, formatTime } from '../services/schedule';
 import { Journey, JourneyView, Origin, WALK_DETOUR, planJourneys, stopsAround } from '../services/router';
 import { useUserLocation } from '../hooks/useUserLocation';
 
 const TAGS = { fastest: 'Самый быстрый', fewest: 'Минимум пересадок', leastWalk: 'Минимум пешком', walk: 'Пешком', alt: 'От другой остановки' } as const;
-const OFFSETS = [0, 15, 30, 60];
+const DATE_RANGE = 14;
+
+const clockInput = (date: Date) => `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+const parseClockInput = (value: string): number | null => {
+  const match = /^(?:([01]\d|2[0-3])):([0-5]\d)$/.exec(value.trim());
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+};
 
 const placeLabel = (p: RoutePlace | null, ph: string) =>
   !p ? ph : p.kind === 'me' ? 'Моё местоположение' : p.kind === 'stop' ? p.stop.name : p.title;
@@ -34,7 +40,8 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
   const [from, setFrom] = useState<RoutePlace | null>(null);
   const [to, setTo] = useState<RoutePlace | null>(null);
   const [editing, setEditing] = useState<'from' | 'to' | null>(null);
-  const [offset, setOffset] = useState(0);
+  const [dateOffset, setDateOffset] = useState(0);
+  const [departureTime, setDepartureTime] = useState(() => clockInput(new Date()));
   const [state, setState] = useState<{ phase: 'idle' | 'loading' | 'done'; journeys: Journey[]; message?: string }>({ phase: 'idle', journeys: [] });
   const [wantSearch, setWantSearch] = useState(false);
   const [autoRun, setAutoRun] = useState(false);
@@ -92,9 +99,13 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
 
   const run = () => {
     if (!from || !to) return;
-    const now = new Date();
-    const depart = minutesOfDay(now) + offset;
-    const day = dayTypeOf(now);
+    const depart = parseClockInput(departureTime);
+    if (depart == null) {
+      setState({ phase: 'done', journeys: [], message: 'Укажи время в формате ЧЧ:ММ, например 08:35.' });
+      return;
+    }
+    const selectedDate = addCalendarDays(new Date(), dateOffset);
+    const day = dayTypeOf(selectedDate);
     if (!data.daysLoaded.includes(day)) {
       setState({ phase: 'done', journeys: [], message: `Расписание на «${DAY_LABEL[day]}» ещё не загружено. Запустите загрузку в такой день недели (см. README).` });
       return;
@@ -123,7 +134,7 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
   };
 
   useEffect(() => { if (wantSearch && location) { setWantSearch(false); run(); } }, [location, wantSearch]);
-  useEffect(() => { if (autoRun && from && to) { setAutoRun(false); run(); } }, [autoRun, from, to]);
+  useEffect(() => { if (autoRun && from && to) { setAutoRun(false); run(); } }, [autoRun, from, to, departureTime, dateOffset]);
 
   const pick = (p: RoutePlace) => {
     if (editing === 'from') setFrom(p); else setTo(p);
@@ -197,16 +208,57 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
       )}
 
       <FadeSlideIn delay={140}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-          {OFFSETS.map((o) => (
-            <PressableScale key={o} onPress={() => setOffset(o)}>
-              <View style={{ paddingHorizontal: 14, paddingVertical: 9, borderRadius: 16,
-                backgroundColor: o === offset ? withAlpha(palette.accent, 0.35) : withAlpha(colors.text, 0.08) }}>
-                <Text style={{ color: colors.text, fontWeight: '600', fontSize: 13 }}>{o === 0 ? 'Выехать сейчас' : `Через ${o} мин`}</Text>
-              </View>
-            </PressableScale>
-          ))}
-        </ScrollView>
+        <GlassCard radius={22} padding={13}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.text, fontSize: 14, fontWeight: '800' }}>Когда выехать</Text>
+              <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 2 }}>{dateLongLabel(addCalendarDays(new Date(), dateOffset))}</Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10, paddingVertical: 7,
+              borderRadius: 13, backgroundColor: withAlpha(palette.accent, 0.14) }}>
+              <Ionicons name="time-outline" size={17} color={palette.accent} />
+              <TextInput
+                value={departureTime}
+                onChangeText={(value) => setDepartureTime(value.replace(/[^0-9:]/g, '').slice(0, 5))}
+                placeholder="ЧЧ:ММ"
+                placeholderTextColor={colors.subtext}
+                keyboardType="numbers-and-punctuation"
+                maxLength={5}
+                style={{ color: colors.text, fontSize: 17, fontWeight: '800', width: 62, padding: 0, textAlign: 'center', outlineStyle: 'none' } as any}
+              />
+            </View>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7 }}>
+            {Array.from({ length: DATE_RANGE }, (_, i) => ({ offset: i, date: addCalendarDays(new Date(), i) })).map(({ offset: dayOffset, date }) => {
+              const active = dayOffset === dateOffset;
+              return (
+                <PressableScale key={dayOffset} onPress={() => setDateOffset(dayOffset)} scaleTo={0.96}>
+                  <View style={{ minWidth: 62, alignItems: 'center', paddingHorizontal: 9, paddingVertical: 8, borderRadius: 13,
+                    backgroundColor: active ? withAlpha(palette.accent, 0.28) : withAlpha(colors.text, 0.07),
+                    borderWidth: 1, borderColor: active ? palette.accent : 'transparent' }}>
+                    <Text style={{ color: colors.text, fontSize: 11, fontWeight: '700' }}>{dateChipLabel(date, dayOffset)}</Text>
+                  </View>
+                </PressableScale>
+              );
+            })}
+          </ScrollView>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 10 }}>
+            {[{ label: 'Сейчас', value: clockInput(new Date()), todayOnly: true }, { label: '07:00', value: '07:00' }, { label: '12:00', value: '12:00' }, { label: '18:00', value: '18:00' }].map((preset) => (
+              <PressableScale key={preset.label} onPress={() => {
+                if (preset.todayOnly) setDateOffset(0);
+                setDepartureTime(preset.value);
+              }} scaleTo={0.96}>
+                <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, backgroundColor: withAlpha(colors.text, 0.07) }}>
+                  <Text style={{ color: colors.subtext, fontSize: 11, fontWeight: '700' }}>{preset.label}</Text>
+                </View>
+              </PressableScale>
+            ))}
+          </View>
+          {parseClockInput(departureTime) == null && (
+            <Text style={{ color: '#FF453A', fontSize: 11, marginTop: 8 }}>Введи время в формате ЧЧ:ММ, например 08:35.</Text>
+          )}
+          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 8 }}>Можно выбрать дату на ближайшие 14 дней и ввести любое время.</Text>
+        </GlassCard>
       </FadeSlideIn>
 
       <FadeSlideIn delay={180}>
@@ -232,6 +284,7 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
       )}
       {state.journeys.map((j, i) => (
         <JourneyCard key={i + '-' + j.leaveAt + j.arriveAt} journey={j} index={i}
+          departureDate={dateLongLabel(addCalendarDays(new Date(), dateOffset))}
           onPress={() => onShowJourney({ journey: j, from: ctxRef.current.from, to: ctxRef.current.to, nonce: Date.now() })} />
       ))}
       {state.journeys.length > 0 && (
@@ -243,7 +296,7 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
   );
 }
 
-function JourneyCard({ journey: j, index, onPress }: { journey: Journey; index: number; onPress: () => void }) {
+function JourneyCard({ journey: j, index, departureDate, onPress }: { journey: Journey; index: number; departureDate: string; onPress: () => void }) {
   const { colors, palette } = useTheme();
   const data = useMemo(() => loadTransitData(), []);
   const name = (id?: string) => (id ? data.stopById.get(id)?.name ?? '—' : '—');
@@ -263,7 +316,7 @@ function JourneyCard({ journey: j, index, onPress }: { journey: Journey; index: 
           <Text style={{ color: colors.text, fontSize: 16, fontWeight: '700' }}>{formatTime(j.leaveAt)} → {formatTime(j.arriveAt)}</Text>
         </View>
         <Text style={{ color: colors.subtext, fontSize: 12, marginTop: 2 }}>
-          пересадок: {j.transfers} · пешком: {j.walkMin} мин
+          {departureDate} · пересадок: {j.transfers} · пешком: {j.walkMin} мин
         </Text>
         <View style={{ marginTop: 12, gap: 10 }}>
           {j.legs.map((l, i) =>

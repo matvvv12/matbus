@@ -39,7 +39,7 @@ export type TimetableEntry = {
   headsign: string;
   day: DayType;
   times: number[];
-  /** true: time is calculated from published frequency, not an official stop-specific minute */
+  /** true: время рассчитано по опубликованному интервалу, а не указано отдельно для остановки */
   estimated?: boolean;
 };
 
