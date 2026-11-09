@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, Pressable, ScrollView, View } from 'react-native';
+import { Animated, Dimensions, Easing, Pressable, ScrollView, View } from 'react-native';
 import { Text } from './Typography';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassCard } from './Glass';
@@ -10,7 +10,7 @@ import { DAY_LABEL, Stop, TransitData } from '../models/stop';
 import { TRANSPORT_META, TransportType, typesOfMask } from '../models/transport';
 import {
   addCalendarDays, dateChipLabel, dateLongLabel, dayTypeOf, formatTime, minutesOfDay,
-  nextDepartures, platformHeadsigns, routeScheduleAtStop, routesAtStop,
+  nextDepartures, nextDepartureByType, platformHeadsigns, routeScheduleAtStop, routesAtStop,
 } from '../services/schedule';
 
 type Props = {
@@ -22,6 +22,7 @@ type Props = {
   isFavorite: boolean;
   onToggleFavorite: () => void;
   onClose: () => void;
+  onOpenRoute: (routeId: string, directionIndex?: number) => void;
 };
 
 const TYPE_ORDER: TransportType[] = ['bus', 'trolleybus', 'tram', 'minibus'];
@@ -40,7 +41,7 @@ export function RouteBadge({ number, type }: { number: string; type: keyof typeo
   );
 }
 
-export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFavorite, onToggleFavorite, onClose }: Props) {
+export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFavorite, onToggleFavorite, onClose, onOpenRoute }: Props) {
   const { colors, palette } = useTheme();
   const sides = stop.platforms.length > 1 ? platformHeadsigns(data, stop.id) : [];
   const hasSides = sides.some((x) => x && x.length);
@@ -50,8 +51,8 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
     return t.length && t.length < 3 && stop.types.length > 1 ? t.map((x) => TRANSPORT_META[x].title).join('/') : '';
   };
   const routesHere = useMemo(
-    () => routesAtStop(data, stop.id, hasSides ? platformIdx : undefined),
-    [data, stop.id, hasSides, platformIdx]
+    () => routesAtStop(data, stop.id),
+    [data, stop.id]
   );
   const routeTypes = useMemo(
     () => TYPE_ORDER.filter((type) => routesHere.some((route) => route.type === type)),
@@ -66,11 +67,14 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   const activeRoutes = routesHere.filter((route) => route.type === activeType);
   const activeRoute = routesHere.find((route) => route.id === activeRouteId) ?? null;
   const selectedSchedule = useMemo(
-    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate, hasSides ? platformIdx : undefined) : [],
-    [data, stop.id, activeRouteId, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), hasSides, platformIdx]
+    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate) : [],
+    [data, stop.id, activeRouteId, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
   );
   const selectedScheduleCount = selectedSchedule.reduce((sum, group) => sum + group.times.length, 0);
-  const nearestDepartures = nextDepartures(data, stop.id, now, 5, hasSides ? platformIdx : undefined);
+  const hasRouteTimetable = activeRouteId != null && (data.byStop.get(stop.id) ?? []).some((entry) => entry.routeId === activeRouteId);
+  const nearestDepartures = nextDepartures(data, stop.id, now, 12);
+  // Показываем рейсы с обеих сторон: неверно выбранная платформа не должна скрывать троллейбус или автобус.
+  const nearestByType = nextDepartureByType(data, stop.id, now);
   const selectedDateIsToday = dateOffset === 0;
   const todayMin = minutesOfDay(now);
 
@@ -79,7 +83,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   }, [stop.id, routeTypes.join('|')]);
   useEffect(() => {
     setActiveRouteId(null);
-  }, [stop.id, activeType, platformIdx]);
+  }, [stop.id, activeType]);
   useEffect(() => {
     setDateOffset(0);
   }, [stop.id]);
@@ -118,6 +122,12 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
       }}
     >
       <GlassCard radius={28} tinted padding={16}>
+        <ScrollView
+          style={{ maxHeight: Dimensions.get('window').height * 0.66 }}
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
+          contentContainerStyle={{ paddingBottom: 2 }}
+        >
         <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -159,6 +169,47 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
             })}
           </View>
         )}
+
+        <View style={{ marginTop: 13, gap: 9 }}>
+          <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайший транспорт по видам</Text>
+          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Учитываются обе стороны остановки — ни один вид транспорта не скрывается из-за выбранной платформы.</Text>
+          {nearestByType.length > 0 ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+              {nearestByType.map((d) => (
+                <PressableScale key={d.route.type} onPress={() => onOpenRoute(d.route.id, d.directionIndex >= 0 ? d.directionIndex : 0)} scaleTo={0.96}>
+                  <View style={{ minWidth: 116, borderRadius: 16, padding: 10, backgroundColor: withAlpha(TRANSPORT_META[d.route.type].color, 0.12), borderWidth: 1, borderColor: withAlpha(TRANSPORT_META[d.route.type].color, 0.38) }}>
+                    <RouteBadge number={d.route.number} type={d.route.type} />
+                    <Text style={{ color: colors.text, fontWeight: '800', fontSize: 13, marginTop: 8 }}>{d.inMin <= 0 ? 'Сейчас' : `Через ${d.inMin} мин`}</Text>
+                    <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 2 }}>{formatTime(d.timeMin)}{d.estimated ? ' ≈' : ''}</Text>
+                    <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 3 }} numberOfLines={1}>{d.headsign}</Text>
+                  </View>
+                </PressableScale>
+              ))}
+            </ScrollView>
+          ) : (
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>На сегодня ближайших отправлений по расписанию нет.</Text>
+          )}
+          <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800', marginTop: 2 }}>Все ближайшие рейсы</Text>
+          {nearestDepartures.length === 0 ? (
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>Ближайших рейсов на сегодня больше нет.</Text>
+          ) : nearestDepartures.map((d, i) => (
+            <FadeSlideIn key={d.route.id + d.timeMin + i} delay={50 + i * 35} distance={8} duration={240}>
+              <PressableScale onPress={() => onOpenRoute(d.route.id, d.directionIndex >= 0 ? d.directionIndex : 0)} scaleTo={0.985}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 2 }}>
+                  <RouteBadge number={d.route.number} type={d.route.type} />
+                  <Text style={{ color: colors.text, fontSize: 13, flex: 1, marginLeft: 9 }} numberOfLines={1}>→ {d.headsign}</Text>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={{ color: palette.accent, fontSize: 14, fontWeight: '800' }}>
+                      {d.inMin <= 0 ? 'сейчас' : `${d.inMin} мин`}
+                    </Text>
+                    <Text style={{ color: colors.subtext, fontSize: 11 }}>{formatTime(d.timeMin)}{d.estimated ? ' ≈' : ''}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={15} color={colors.subtext} style={{ marginLeft: 6 }} />
+                </View>
+              </PressableScale>
+            </FadeSlideIn>
+          ))}
+        </View>
 
         <View style={{ marginTop: 14, gap: 9 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -232,7 +283,11 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
                   {!dayLoaded ? (
                     <Text style={{ color: colors.subtext, fontSize: 12 }}>Расписание на этот день не загружено.</Text>
                   ) : selectedScheduleCount === 0 ? (
-                    <Text style={{ color: colors.subtext, fontSize: 12 }}>На выбранную дату отправления не найдены.</Text>
+                    <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                      {hasRouteTimetable
+                        ? 'На выбранную дату отправления не найдены.'
+                        : 'Маршрут проходит через эту остановку, но отдельное время отправления в источнике не опубликовано.'}
+                    </Text>
                   ) : (
                     <>
                       <Text style={{ color: colors.subtext, fontSize: 11 }}>Всего отправлений: {selectedScheduleCount}</Text>
@@ -263,7 +318,14 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
                       </ScrollView>
                     </>
                   )}
-                  <Text style={{ color: colors.subtext, fontSize: 10 }}>В расписании показаны все рейсы по выбранному дню недели. Для маршруток с расчётным временем стоит отметка ≈.</Text>
+                  <Text style={{ color: colors.subtext, fontSize: 10 }}>Показаны все направления и отправления за выбранный день. Для маршруток с расчётным временем стоит отметка ≈.</Text>
+                  <PressableScale onPress={() => onOpenRoute(activeRoute.id)} scaleTo={0.97}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+                      backgroundColor: withAlpha(palette.accent, 0.18), borderRadius: 13, paddingVertical: 10 }}>
+                      <Ionicons name="map-outline" size={16} color={palette.accent} />
+                      <Text style={{ color: palette.accent, fontWeight: '800', fontSize: 12 }}>Показать путь на карте</Text>
+                    </View>
+                  </PressableScale>
                 </View>
               )}
             </>
@@ -272,30 +334,9 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
           )}
         </View>
 
-        {!activeRoute && (
-          <View style={{ marginTop: 13, gap: 8 }}>
-            <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайшие отправления</Text>
-            {nearestDepartures.length === 0 ? (
-              <Text style={{ color: colors.subtext, fontSize: 12 }}>Ближайших рейсов на сегодня больше нет.</Text>
-            ) : nearestDepartures.map((d, i) => (
-              <FadeSlideIn key={d.route.id + d.timeMin + i} delay={50 + i * 35} distance={8} duration={240}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <RouteBadge number={d.route.number} type={d.route.type} />
-                  <Text style={{ color: colors.text, fontSize: 13, flex: 1, marginLeft: 9 }} numberOfLines={1}>→ {d.headsign}</Text>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={{ color: palette.accent, fontSize: 14, fontWeight: '800' }}>
-                      {d.inMin <= 0 ? 'сейчас' : `${d.inMin} мин`}
-                    </Text>
-                    <Text style={{ color: colors.subtext, fontSize: 11 }}>{formatTime(d.timeMin)}{d.estimated ? ' ≈' : ''}</Text>
-                  </View>
-                </View>
-              </FadeSlideIn>
-            ))}
-          </View>
-        )}
 
         <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 10 }}>
-          По расписанию, не по GPS · {data.sourceName}
+          Все направления остановки · по расписанию, не по GPS · ≈ — расчётное время · {data.sourceName}
         </Text>
 
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
@@ -320,6 +361,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
             </View>
           </PressableScale>
         </View>
+        </ScrollView>
       </GlassCard>
     </Animated.View>
   );

@@ -20,6 +20,7 @@ export type Departure = {
   timeMin: number;
   inMin: number;
   estimated: boolean;
+  directionIndex: number;
 };
 
 export type StopRouteSchedule = {
@@ -40,11 +41,22 @@ export function nextDepartures(data: TransitData, stopId: string, now: Date, lim
     .forEach((e) => {
       const route = routeById.get(e.routeId);
       if (!route) return;
-      e.times.filter((t) => t >= nowMin).slice(0, 2).forEach((t) =>
-        out.push({ route, headsign: e.headsign, timeMin: t, inMin: t - nowMin, estimated: Boolean(e.estimated) })
+      Array.from(new Set(e.times)).filter((t) => t >= nowMin).slice(0, 2).forEach((t) =>
+        out.push({
+          route,
+          headsign: e.headsign?.trim() || 'Направление не указано',
+          timeMin: t, inMin: t - nowMin, estimated: Boolean(e.estimated),
+          directionIndex: route.directions.findIndex((direction) => direction.title === e.title),
+        })
       );
     });
-  return out.sort((a, b) => a.timeMin - b.timeMin).slice(0, limit);
+  const seen = new Set<string>();
+  return out.sort((a, b) => a.timeMin - b.timeMin).filter((entry) => {
+    const key = `${entry.route.id}|${entry.headsign}|${entry.timeMin}|${entry.estimated ? 1 : 0}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, limit);
 }
 
 /** Все рейсы конкретного маршрута на остановке за выбранный тип дня, сгруппированные по направлению. */
@@ -79,17 +91,34 @@ export function routeScheduleAtStop(
 export function routesAtStop(data: TransitData, stopId: string, platform?: number): TransportRoute[] {
   const routeById = new Map(data.routes.map((r) => [r.id, r]));
   const seen = new Set<string>();
-  const out: TransportRoute[] = [];
-  (data.byStop.get(stopId) ?? []).forEach((e) => {
-    if (platform != null && e.platform != null && e.platform !== platform) return;
-    if (seen.has(e.routeId)) return;
-    seen.add(e.routeId);
-    const r = routeById.get(e.routeId);
-    if (r) out.push(r);
+  const add = (routeId: string) => {
+    if (seen.has(routeId)) return;
+    const route = routeById.get(routeId);
+    if (route) { seen.add(routeId); }
+  };
+  // Расписание может не содержать строку на отдельной остановке (например, конечную),
+  // поэтому список маршрутов строим также по последовательностям остановок.
+  (data.byStop.get(stopId) ?? []).forEach((entry) => {
+    if (platform != null && entry.platform != null && entry.platform !== platform) return;
+    add(entry.routeId);
   });
-  return out.sort((a, b) =>
+  data.routes.forEach((route) => {
+    if (route.directions.some((direction) => direction.stopIds.includes(stopId))) add(route.id);
+  });
+  return Array.from(seen).map((id) => routeById.get(id)!).sort((a, b) =>
     a.type === b.type ? a.number.localeCompare(b.number, 'ru', { numeric: true }) : a.type.localeCompare(b.type)
   );
+}
+
+/** По одному ближайшему отправлению каждого вида транспорта. */
+export function nextDepartureByType(data: TransitData, stopId: string, now: Date, platform?: number): Departure[] {
+  const all = nextDepartures(data, stopId, now, Number.MAX_SAFE_INTEGER, platform);
+  const seen = new Set<string>();
+  return all.filter((departure) => {
+    if (seen.has(departure.route.type)) return false;
+    seen.add(departure.route.type);
+    return true;
+  });
 }
 
 export const normTitle = (s: string) => s.toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, '');

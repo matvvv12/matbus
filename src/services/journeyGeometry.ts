@@ -99,3 +99,33 @@ export function buildGeometry(data: TransitData, jv: JourneyView): RouteGeometry
   }
   return { lines, markers, bounds: computeBounds(lines, markers), legBounds };
 }
+
+
+/** Полная геометрия выбранного городского маршрута для просмотра на карте. */
+export function buildRoutePreview(data: TransitData, route: import('../models/stop').TransportRoute, directionIndex = 0): {
+  geometry: RouteGeometry;
+  direction: import('../models/stop').RouteDirection | null;
+  stopNames: { id: string; name: string }[];
+} {
+  const direction = route.directions[directionIndex] ?? route.directions[0] ?? null;
+  if (!direction) return { geometry: { lines: [], markers: [], bounds: null, legBounds: [] }, direction: null, stopNames: [] };
+
+  const stopNames = direction.stopIds.map((id) => ({ id, name: data.stopById.get(id)?.name ?? 'Остановка' }));
+  // Сохраняем связь координаты с конкретной остановкой: часть остановок в источнике
+  // пока без координат, и фильтрация точек не должна сдвигать подписи начала/конца.
+  const locatedStops = direction.stopIds.map((id) => {
+    const point = platformPoint(data, id, route.id, direction.title);
+    return point ? { id, name: data.stopById.get(id)?.name ?? 'Остановка', point } : null;
+  }).filter((item): item is { id: string; name: string; point: LL } => item != null);
+  const points = locatedStops.map((item) => item.point);
+  const lines: GeoLine[] = points.length >= 2 ? [{ kind: 'ride', type: route.type, pts: points }] : [];
+  const markers: GeoMarker[] = locatedStops.map((item, index) => ({
+    lat: item.point[0], lng: item.point[1],
+    kind: index === 0 ? 'board' : index === locatedStops.length - 1 ? 'alight' : 'mid',
+    icon: index === 0 ? route.type : index === locatedStops.length - 1 ? 'alight' : 'mid',
+    title: index === 0 ? 'Начало маршрута' : index === locatedStops.length - 1 ? 'Конечная остановка' : '',
+    sub: index === 0 || index === locatedStops.length - 1 ? item.name : undefined,
+  }));
+  const bounds = computeBounds(lines, markers);
+  return { geometry: { lines, markers, bounds, legBounds: [bounds] }, direction, stopNames };
+}

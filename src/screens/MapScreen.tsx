@@ -21,7 +21,7 @@ import { usePlaces } from '../theme/PlacesContext';
 import { PLACE_META, PlaceType, RoutePlace } from '../models/place';
 import { reverseGeocode } from '../services/geocode';
 import type { JourneyView } from '../services/router';
-import { RouteGeometry, buildGeometry, computeBounds } from '../services/journeyGeometry';
+import { RouteGeometry, buildGeometry, buildRoutePreview, computeBounds } from '../services/journeyGeometry';
 import { snapToRoad } from '../services/osrm';
 
 const FILTERS: TransportType[] = ['bus', 'trolleybus', 'tram', 'minibus'];
@@ -56,6 +56,7 @@ export default function MapScreen({
   const [toast, setToast] = useState<string | null>(null);
   const [geom, setGeom] = useState<RouteGeometry | null>(null);
   const [geomLoading, setGeomLoading] = useState(false);
+  const [routePreview, setRoutePreview] = useState<{ routeId: string; directionIndex: number; nonce: number } | null>(null);
   const [fit, setFit] = useState<{ bounds: [[number, number], [number, number]]; nonce: number } | null>(null);
   const { savePlace } = usePlaces();
   const locRef = React.useRef(location);
@@ -91,6 +92,9 @@ export default function MapScreen({
   }, [location, pin, mappedStops]);
 
   const selected = data.stops.find((s) => s.id === selectedId) ?? null;
+  const previewRoute = routePreview ? data.routes.find((route) => route.id === routePreview.routeId) ?? null : null;
+  const preview = useMemo(() => previewRoute ? buildRoutePreview(data, previewRoute, routePreview?.directionIndex ?? 0) : null, [data, previewRoute, routePreview?.directionIndex]);
+  const [previewGeometry, setPreviewGeometry] = useState<RouteGeometry | null>(null);
 
   const focusPlatform = useCallback((stop: Stop, pi: number) => {
     const p = stop.platforms[pi] ?? (hasCoords(stop) ? { latitude: stop.latitude as number, longitude: stop.longitude as number } : null);
@@ -107,6 +111,7 @@ export default function MapScreen({
         if (d < best) { best = d; idx = i; }
       });
     }
+    setRoutePreview(null);
     setSelectedId(stop.id);
     setSelectedPi(idx);
     focusPlatform(stop, idx);
@@ -152,6 +157,28 @@ export default function MapScreen({
     return () => { cancelled = true; };
   }, [journey?.nonce]);
 
+  // Для автобусов, троллейбусов и маршруток уточняем линию по уличной сети.
+  // Если OSRM недоступен, сразу остаётся базовая линия между координатами остановок.
+  useEffect(() => {
+    if (!routePreview || !preview) { setPreviewGeometry(null); return; }
+    let cancelled = false;
+    const base = preview.geometry;
+    setPreviewGeometry(base);
+    if (previewRoute?.type === 'tram' || !base.lines.length) return;
+    (async () => {
+      const lines = await Promise.all(base.lines.map(async (line) => {
+        if (line.kind !== 'ride') return line;
+        const snapped = await Promise.race([
+          snapToRoad(line.pts),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 4500)),
+        ]);
+        return snapped ? { ...line, pts: snapped } : line;
+      }));
+      if (!cancelled) setPreviewGeometry({ ...base, lines, bounds: computeBounds(lines, base.markers) });
+    })();
+    return () => { cancelled = true; };
+  }, [routePreview?.nonce, preview, previewRoute?.type]);
+
   const onMapTap = useCallback((lat: number, lng: number) => {
     setSelectedId(null);
     setPin({ latitude: lat, longitude: lng, label: null });
@@ -164,6 +191,13 @@ export default function MapScreen({
   }, [pick?.nonce]);
 
   const flash = (t: string) => { setToast(t); setTimeout(() => setToast(null), 2200); };
+
+  const openRoutePreview = useCallback((routeId: string, directionIndex = 0) => {
+    setRoutePreview({ routeId, directionIndex, nonce: Date.now() });
+    setSelectedId(null);
+    setPin(null);
+    setFilter(null);
+  }, []);
 
   const saveAs = (type: PlaceType, title?: string, id?: string) => {
     if (!pin) return;
@@ -178,21 +212,21 @@ export default function MapScreen({
   return (
     <View style={{ flex: 1 }}>
       <LeafletMap
-        stops={journey ? [] : mappedStops}
+        stops={journey || routePreview ? [] : mappedStops}
         selectedId={selectedId}
         selectedPlatform={selectedPi}
         user={location}
         focus={focus}
         dark={scheme === 'dark'}
         accent={palette.accent}
-        pin={journey ? null : pin}
-        route={geom}
+        pin={journey || routePreview ? null : pin}
+        route={journey ? geom : previewGeometry ?? preview?.geometry ?? null}
         fit={fit}
-        onTap={journey ? () => {} : onMapTap}
+        onTap={journey || routePreview ? () => {} : onMapTap}
         onSelect={onMapSelect}
       />
 
-      <View style={[{ position: 'absolute', top: insets.top + 16, left: 16, right: 16 }, journey ? { display: 'none' } : null]} pointerEvents="box-none">
+      <View style={[{ position: 'absolute', top: insets.top + 16, left: 16, right: 16 }, journey || routePreview ? { display: 'none' } : null]} pointerEvents="box-none">
         <FadeSlideIn distance={-20} duration={450}>
           <GlassCard radius={22} padding={12}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -236,7 +270,7 @@ export default function MapScreen({
                     <View style={{ paddingVertical: 10, paddingHorizontal: 10 }}>
                       <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600' }}>{s.name}</Text>
                       <Text style={{ color: colors.subtext, fontSize: 12 }}>
-                        {s.types.map((t) => TRANSPORT_META[t].title).join(', ') || s.address}
+                        {s.types.map((t) => TRANSPORT_META[t].title).join(', ') || s.address}{s.latitude == null ? ' · нет координат на карте' : ''}
                       </Text>
                     </View>
                   </PressableScale>
@@ -326,11 +360,33 @@ export default function MapScreen({
         </View>
       )}
 
+      {routePreview && previewRoute && (
+        <View style={{ position: 'absolute', top: insets.top + 16, left: 16, right: 16 }} pointerEvents="box-none">
+          <FadeSlideIn distance={-18} duration={380}>
+            <GlassCard radius={22} tinted padding={12}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <RouteBadge number={previewRoute.number} type={previewRoute.type} />
+                <Text style={{ color: colors.text, fontSize: 14, fontWeight: '800', flex: 1 }} numberOfLines={1}>{TRANSPORT_META[previewRoute.type].title} · маршрут</Text>
+                <PressableScale onPress={() => setRoutePreview(null)} hitSlop={8}>
+                  <Ionicons name="close-circle" size={25} color={colors.subtext} />
+                </PressableScale>
+              </View>
+              <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 7 }} numberOfLines={2}>{preview?.direction?.title ?? 'Направление не указано'}</Text>
+            </GlassCard>
+          </FadeSlideIn>
+        </View>
+      )}
+
       <View style={{ position: 'absolute', left: 16, right: 16, bottom }} pointerEvents="box-none">
         {journey ? (
           <JourneyPanel journey={journey} loading={geomLoading} geom={geom} data={data}
             onFitAll={() => geom?.bounds && setFit({ bounds: geom.bounds, nonce: Date.now() })}
             onFitLeg={(i) => { const b = geom?.legBounds[i]; if (b) setFit({ bounds: b, nonce: Date.now() }); }} />
+        ) : routePreview && previewRoute && preview ? (
+          <RoutePreviewPanel route={previewRoute} directionIndex={routePreview.directionIndex} directionCount={previewRoute.directions.length}
+            title={preview.direction?.title ?? 'Направление'} stops={preview.stopNames} mappedStopCount={preview.geometry.markers.length}
+            onDirection={(directionIndex) => setRoutePreview((current) => current ? { ...current, directionIndex, nonce: Date.now() } : current)}
+            onClose={() => setRoutePreview(null)} onFit={() => (previewGeometry?.bounds ?? preview.geometry.bounds) && setFit({ bounds: (previewGeometry?.bounds ?? preview.geometry.bounds)!, nonce: Date.now() })} />
         ) : selected ? (
           <StopCard
             key={selected.id}
@@ -342,6 +398,7 @@ export default function MapScreen({
             onSelectPlatform={(pi) => { setSelectedPi(pi); focusPlatform(selected, pi); }}
             onToggleFavorite={() => toggle(selected.id)}
             onClose={() => setSelectedId(null)}
+            onOpenRoute={openRoutePreview}
           />
         ) : (pin || location) ? (
           <FadeSlideIn>
@@ -441,6 +498,63 @@ function Chip({
   );
 }
 
+
+function RoutePreviewPanel({ route, directionIndex, directionCount, title, stops, mappedStopCount, onDirection, onClose, onFit }: {
+  route: import('../models/stop').TransportRoute; directionIndex: number; directionCount: number; title: string;
+  stops: { id: string; name: string }[]; mappedStopCount: number; onDirection: (index: number) => void; onClose: () => void; onFit: () => void;
+}) {
+  const { colors, palette } = useTheme();
+  const meta = TRANSPORT_META[route.type];
+  return (
+    <FadeSlideIn distance={32} duration={390}>
+      <GlassCard radius={26} tinted padding={14}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <RouteBadge number={route.number} type={route.type} />
+            <View>
+              <Text style={{ color: colors.text, fontSize: 14, fontWeight: '800' }}>{meta.title}</Text>
+              <Text style={{ color: colors.subtext, fontSize: 10 }}>{stops.length} остановок · на карте {mappedStopCount}{mappedStopCount < stops.length ? ` · без координат ${stops.length - mappedStopCount}` : ''}</Text>
+            </View>
+          </View>
+          <PressableScale onPress={onClose} hitSlop={8}><Ionicons name="close-circle" size={25} color={colors.subtext} /></PressableScale>
+        </View>
+        {directionCount > 1 && (
+          <View style={{ flexDirection: 'row', gap: 7, marginTop: 11 }}>
+            {route.directions.map((direction, index) => {
+              const active = index === directionIndex;
+              return (
+                <PressableScale key={`${direction.title}-${index}`} onPress={() => onDirection(index)} style={{ flex: 1 }} scaleTo={0.97}>
+                  <View style={{ paddingVertical: 8, paddingHorizontal: 8, borderRadius: 12, backgroundColor: active ? withAlpha(meta.color, 0.2) : withAlpha(colors.text, 0.07), borderWidth: 1, borderColor: active ? meta.color : 'transparent' }}>
+                    <Text style={{ color: active ? meta.color : colors.subtext, fontSize: 10, fontWeight: '800', textAlign: 'center' }}>{index === 0 ? 'Направление 1' : `Направление ${index + 1}`}</Text>
+                  </View>
+                </PressableScale>
+              );
+            })}
+          </View>
+        )}
+        <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 9, marginBottom: 5 }} numberOfLines={2}>{title}</Text>
+        <ScrollView style={{ maxHeight: 122 }} nestedScrollEnabled showsVerticalScrollIndicator contentContainerStyle={{ paddingVertical: 3 }}>
+          {stops.map((stop, index) => (
+            <View key={`${stop.id}-${index}`} style={{ flexDirection: 'row', alignItems: 'center', minHeight: 26 }}>
+              <View style={{ width: 22, alignItems: 'center' }}>
+                <View style={{ width: index === 0 || index === stops.length - 1 ? 9 : 6, height: index === 0 || index === stops.length - 1 ? 9 : 6, borderRadius: 9, backgroundColor: index === 0 || index === stops.length - 1 ? meta.color : withAlpha(meta.color, 0.65) }} />
+              </View>
+              <Text style={{ color: colors.text, fontSize: 11, flex: 1, paddingVertical: 4 }} numberOfLines={1}>{stop.name}</Text>
+              {(index === 0 || index === stops.length - 1) && <Text style={{ color: meta.color, fontSize: 9, fontWeight: '800' }}>{index === 0 ? 'СТАРТ' : 'КОНЕЧНАЯ'}</Text>}
+            </View>
+          ))}
+        </ScrollView>
+        {stops.length < 2 && <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 6 }}>Недостаточно координат для построения линии на карте.</Text>}
+        <PressableScale onPress={onFit} scaleTo={0.98}>
+          <View style={{ marginTop: 10, borderRadius: 14, paddingVertical: 10, backgroundColor: withAlpha(palette.accent, 0.17), flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+            <Ionicons name="scan-outline" size={16} color={palette.accent} />
+            <Text style={{ color: palette.accent, fontWeight: '800', fontSize: 12 }}>Показать весь маршрут</Text>
+          </View>
+        </PressableScale>
+      </GlassCard>
+    </FadeSlideIn>
+  );
+}
 
 function PinCard({
   pin, pick, onClose, onPlan, onSave,

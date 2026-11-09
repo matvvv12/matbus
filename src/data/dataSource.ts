@@ -191,6 +191,17 @@ function buildReal(raw: any): TransitData | null {
     })
   );
 
+  // Не полагаемся только на сохранённый список типов остановки: сверяем его с реальными
+  // последовательностями маршрутов, чтобы вид транспорта не пропадал из фильтров.
+  const typesAtStop = new Map<string, Set<TransportType>>();
+  routes.forEach((route) => route.directions.forEach((direction) => direction.stopIds.forEach((id) => {
+    if (!typesAtStop.has(id)) typesAtStop.set(id, new Set());
+    typesAtStop.get(id)!.add(route.type);
+  })));
+  stops.forEach((stop) => {
+    stop.types = Array.from(new Set([...(stop.types ?? []), ...(typesAtStop.get(stop.id) ?? [])]));
+  });
+
   const stopByIdTmp = new Map(stops.map((x) => [x.id, x]));
   resolvePlatforms(stops, Array.from(routes.values()), stopByIdTmp);
   const sideMap = buildSideMap(stopByIdTmp, Array.from(routes.values()));
@@ -207,6 +218,7 @@ function buildReal(raw: any): TransitData | null {
   };
 
   const timetables: TimetableEntry[] = [];
+  const rawTimetableGroups = new Map<string, any[]>();
   (raw.timetables ?? []).forEach((t: any) => {
     const stopId = String(t.stopId);
     if (!stopIds.has(stopId) || !Array.isArray(t.times) || !t.times.length) return;
@@ -214,11 +226,44 @@ function buildReal(raw: any): TransitData | null {
       const [type, ...rest] = String(t.routeId).split('-');
       routes.set(t.routeId, { id: t.routeId, number: rest.join('-'), type: type as TransportType, isDemo: false, directions: [] });
     }
-    timetables.push({
-      stopId, routeId: t.routeId, title: String(t.title ?? ''),
-      platform: platformFor(stopId, t.routeId, String(t.title ?? '')),
-      headsign: String(t.title ?? '').split(' - ').pop()?.trim() ?? '',
-      day: t.day, times: t.times, estimated: Boolean(t.estimated),
+    const key = `${stopId}|${t.routeId}|${t.day}`;
+    const group = rawTimetableGroups.get(key);
+    if (group) group.push(t);
+    else rawTimetableGroups.set(key, [t]);
+  });
+
+  rawTimetableGroups.forEach((group) => {
+    const first = group[0];
+    const stopId = String(first.stopId);
+    const routeId = String(first.routeId);
+    const route = routes.get(routeId);
+    const matchingDirections = (route?.directions ?? []).filter((direction) => direction.stopIds.includes(stopId));
+
+    group.forEach((t, index) => {
+      let title = String(t.title ?? '').trim();
+      if (!title) {
+        // В выгрузке часть строк не содержит направления. Заполняем его только тогда,
+        // когда число строк однозначно совпадает с числом направлений маршрута на остановке.
+        if (matchingDirections.length === group.length && matchingDirections.length > 0) {
+          title = matchingDirections[index]?.title ?? '';
+        }
+        if (!title && matchingDirections.length === 1 && group.length === 1) {
+          title = matchingDirections[0].title;
+        }
+        if (!title) title = 'Направление не указано в источнике';
+      }
+      const times = Array.from(new Set<number>(t.times.map((value: number) => Number(value))))
+        .filter((value) => Number.isFinite(value) && value >= 0)
+        .sort((a, b) => a - b);
+      if (!times.length) return;
+      timetables.push({
+        stopId, routeId, title,
+        platform: platformFor(stopId, routeId, title),
+        headsign: title === 'Направление не указано в источнике'
+          ? title
+          : (title.split(' - ').pop()?.trim() || title),
+        day: t.day, times, estimated: Boolean(t.estimated),
+      });
     });
   });
 

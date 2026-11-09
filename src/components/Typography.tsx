@@ -27,10 +27,10 @@ function withFont(style: any) {
   return [{ fontFamily: FAMILY[weightOf(fontWeight)] }, rest];
 }
 
-export const Text = React.forwardRef<RNText, TextProps>((props, ref) => (
+export const Text = React.forwardRef<React.ComponentRef<typeof RNText>, TextProps>((props, ref) => (
   <RNText ref={ref} {...props} style={withFont(props.style)} />
 ));
 
-export const TextInput = React.forwardRef<RNTextInput, TextInputProps>((props, ref) => (
+export const TextInput = React.forwardRef<React.ComponentRef<typeof RNTextInput>, TextInputProps>((props, ref) => (
   <RNTextInput ref={ref} {...props} style={withFont(props.style)} />
 ));

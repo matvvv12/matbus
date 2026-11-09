@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, ScrollView, View } from 'react-native';
-import { Text, TextInput } from '../components/Typography';
+import { Text } from '../components/Typography';
+import ClockTimePicker from '../components/ClockTimePicker';
 import { useInsets } from '../hooks/useInsets';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassButton, GlassCard } from '../components/Glass';
@@ -42,6 +43,7 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
   const [editing, setEditing] = useState<'from' | 'to' | null>(null);
   const [dateOffset, setDateOffset] = useState(0);
   const [departureTime, setDepartureTime] = useState(() => clockInput(new Date()));
+  const [clockOpen, setClockOpen] = useState(false);
   const [state, setState] = useState<{ phase: 'idle' | 'loading' | 'done'; journeys: Journey[]; message?: string }>({ phase: 'idle', journeys: [] });
   const [wantSearch, setWantSearch] = useState(false);
   const [autoRun, setAutoRun] = useState(false);
@@ -214,20 +216,27 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
               <Text style={{ color: colors.text, fontSize: 14, fontWeight: '800' }}>Когда выехать</Text>
               <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 2 }}>{dateLongLabel(addCalendarDays(new Date(), dateOffset))}</Text>
             </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10, paddingVertical: 7,
-              borderRadius: 13, backgroundColor: withAlpha(palette.accent, 0.14) }}>
-              <Ionicons name="time-outline" size={17} color={palette.accent} />
-              <TextInput
-                value={departureTime}
-                onChangeText={(value) => setDepartureTime(value.replace(/[^0-9:]/g, '').slice(0, 5))}
-                placeholder="ЧЧ:ММ"
-                placeholderTextColor={colors.subtext}
-                keyboardType="numbers-and-punctuation"
-                maxLength={5}
-                style={{ color: colors.text, fontSize: 17, fontWeight: '800', width: 62, padding: 0, textAlign: 'center', outlineStyle: 'none' } as any}
-              />
-            </View>
+            <PressableScale onPress={() => setClockOpen((open) => !open)} scaleTo={0.97}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, paddingVertical: 8,
+                borderRadius: 13, backgroundColor: withAlpha(palette.accent, 0.16), borderWidth: 1, borderColor: withAlpha(palette.accent, 0.35) }}>
+                <Ionicons name="time-outline" size={17} color={palette.accent} />
+                <Text style={{ color: colors.text, fontSize: 17, fontWeight: '800', minWidth: 52, textAlign: 'center' }}>{departureTime}</Text>
+                <Ionicons name={clockOpen ? 'chevron-up' : 'chevron-down'} size={14} color={palette.accent} />
+              </View>
+            </PressableScale>
           </View>
+          {clockOpen && (
+            <FadeSlideIn distance={12} duration={300}>
+              <View style={{ marginTop: 10, borderRadius: 20, padding: 12, backgroundColor: withAlpha(colors.text, 0.045) }}>
+                <ClockTimePicker value={departureTime} onChange={setDepartureTime} />
+                <PressableScale onPress={() => setClockOpen(false)} scaleTo={0.97}>
+                  <View style={{ alignSelf: 'center', marginTop: 8, paddingHorizontal: 18, paddingVertical: 8, borderRadius: 12, backgroundColor: withAlpha(palette.accent, 0.18) }}>
+                    <Text style={{ color: palette.accent, fontSize: 12, fontWeight: '800' }}>Готово · {departureTime}</Text>
+                  </View>
+                </PressableScale>
+              </View>
+            </FadeSlideIn>
+          )}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7 }}>
             {Array.from({ length: DATE_RANGE }, (_, i) => ({ offset: i, date: addCalendarDays(new Date(), i) })).map(({ offset: dayOffset, date }) => {
               const active = dayOffset === dateOffset;
@@ -247,6 +256,7 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
               <PressableScale key={preset.label} onPress={() => {
                 if (preset.todayOnly) setDateOffset(0);
                 setDepartureTime(preset.value);
+                setClockOpen(false);
               }} scaleTo={0.96}>
                 <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, backgroundColor: withAlpha(colors.text, 0.07) }}>
                   <Text style={{ color: colors.subtext, fontSize: 11, fontWeight: '700' }}>{preset.label}</Text>
@@ -255,9 +265,9 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
             ))}
           </View>
           {parseClockInput(departureTime) == null && (
-            <Text style={{ color: '#FF453A', fontSize: 11, marginTop: 8 }}>Введи время в формате ЧЧ:ММ, например 08:35.</Text>
+            <Text style={{ color: '#FF453A', fontSize: 11, marginTop: 8 }}>Выбери время на циферблате.</Text>
           )}
-          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 8 }}>Можно выбрать дату на ближайшие 14 дней и ввести любое время.</Text>
+          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 8 }}>Можно выбрать дату на ближайшие 14 дней и любое время с точностью до минуты.</Text>
         </GlassCard>
       </FadeSlideIn>
 
