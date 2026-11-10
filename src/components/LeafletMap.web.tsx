@@ -49,14 +49,35 @@ html,body,#map{margin:0;height:100%;width:100%;background:#1b1b22}
 <script>
 var mapEl=document.getElementById('map');
 var map=L.map('map',{zoomControl:false}).setView([${VITEBSK.center.latitude},${VITEBSK.center.longitude}],14);
-var OSM='https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+// Use the public OSM raster endpoint directly. CARTO started requiring API
+// keys for external basemap requests in September 2026; requests without a key
+// return a successful image containing an "API KEY REQUIRED" watermark, so a
+// tileerror handler cannot detect that failure.
+var OSM='https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 var ESRI='https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
-var tiles=L.tileLayer(OSM,{maxZoom:20,subdomains:'abcd',attribution:'&copy; OpenStreetMap contributors &copy; CARTO'}).addTo(map);
-var errs=0,switched=false;
+var tiles=L.tileLayer(OSM,{
+  minZoom:2,maxZoom:19,maxNativeZoom:19,
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+  updateWhenIdle:true,keepBuffer:2
+}).addTo(map);
+var tileErrors=0,switched=false;
+function switchToEsri(){
+  if(switched)return;
+  switched=true;
+  map.removeLayer(tiles);
+  tiles=L.tileLayer(ESRI,{
+    minZoom:2,maxZoom:19,
+    attribution:'Tiles &copy; <a href="https://www.esri.com/">Esri</a>',
+    updateWhenIdle:true,keepBuffer:2
+  }).addTo(map);
+  tileErrors=0;
+}
+// Ignore isolated tile misses; fail over only when several consecutive tiles
+// fail. A successful tile resets the counter.
+tiles.on('tileload',function(){tileErrors=0;});
 tiles.on('tileerror',function(){
-  errs++;
-  if(errs>=3&&!switched){switched=true;map.removeLayer(tiles);
-    tiles=L.tileLayer(ESRI,{maxZoom:19,attribution:'Tiles &copy; Esri'}).addTo(map);}
+  tileErrors++;
+  if(tileErrors>=4)switchToEsri();
 });
 var userMarker=null;var userAccuracyCircle=null;var pinMarker=null;var pinKey='';var wasFollowing=false;
 var curDark=true,curAccent='#B14CFF',lastKey='',mk={},selKeys=[];
