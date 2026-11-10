@@ -2,7 +2,6 @@
 // Запуск (из папки проекта matbus):
 //   node tools/import-voat.mjs --debug=51        проверка разбора одной остановки
 //   node tools/import-voat.mjs --coords          полная загрузка + координаты из OpenStreetMap
-//   node tools/import-voat.mjs --coords-only     обновить только координаты, сохранив прежние при отсутствии совпадения
 //   node tools/import-voat.mjs --day=saturday    добавить расписание за другой день (запускайте в этот день)
 // Ключи: --limit=N (только первые N остановок), --day=weekday|saturday|sunday (по умолчанию - день недели сегодня)
 import fs from 'node:fs';
@@ -169,100 +168,177 @@ async function buildRoutes(nameToId) {
   return { routes, unresolved };
 }
 
-// Виды транспорта по тегам OSM: 1 — автобус, 2 — троллейбус, 4 — трамвай, 0 — не указано
-function modeMask(t) {
+// Виды транспорта по тегам OSM: 1 — автобус, 2 — троллейбус, 4 — трамвай.
+// ВАЖНО: обычный highway=bus_stop сам по себе не означает trolleybus=yes.
+function modeMask(t = {}) {
   let m = 0;
-  const yes = (v) => v === 'yes';
+  const yes = (v) => String(v || '').toLowerCase() === 'yes';
   if (t.railway === 'tram_stop' || yes(t.tram)) m |= 4;
   if (yes(t.trolleybus)) m |= 2;
-  if (yes(t.bus)) m |= 1;
-  if (t.highway === 'bus_stop') {
-    if (t.bus !== 'no') m |= 1;
-    if (t.trolleybus !== 'no') m |= 2;
-  }
+  if (yes(t.bus) || (t.highway === 'bus_stop' && t.bus !== 'no')) m |= 1;
   return m;
 }
 
+const NAME_TAGS = ['name:ru', 'name', 'name:be', 'official_name', 'alt_name', 'short_name', 'loc_name', 'old_name'];
+
 async function fetchOsmCoords() {
-  // Расширенная область захватывает конечные и пригородные остановки Витебска.
-  // Берём не только остановочные столбы, но и платформы (включая площадные OSM-объекты)
-  // и именованные stop_position. Для ways Overpass возвращает центр объекта.
-  const bb = '55.05,29.95,55.40,30.50';
-  const q = `[out:json][timeout:90];(` +
-    `node["highway"="bus_stop"](${bb});` +
-    `node["railway"="tram_stop"](${bb});` +
-    `node["public_transport"="platform"]["name"](${bb});` +
-    `node["public_transport"="stop_position"]["name"](${bb});` +
-    `way["public_transport"="platform"]["name"](${bb});` +
-    `way["highway"="bus_stop"]["name"](${bb});` +
-    `way["railway"="tram_stop"]["name"](${bb});` +
-    `relation["public_transport"="platform"]["name"](${bb});` +
+  // Расширенная рамка включает город, промзоны и ближайшие пригородные остановки.
+  const bb = '55.05,29.94,55.34,30.48';
+  const q = `[out:json][timeout:120];(
+` +
+    `nwr["highway"="bus_stop"](${bb});
+` +
+    `nwr["highway"="platform"](${bb});
+` +
+    `nwr["railway"="tram_stop"](${bb});
+` +
+    `nwr["public_transport"="platform"](${bb});
+` +
+    `nwr["public_transport"="stop_position"](${bb});
+` +
+    `nwr["bus"="yes"](${bb});
+` +
+    `nwr["trolleybus"="yes"](${bb});
+` +
+    `nwr["tram"="yes"](${bb});
+` +
     `);out center tags;`;
-  const init = {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q),
-  };
   const endpoints = [
     'https://overpass-api.de/api/interpreter',
     'https://overpass.kumi.systems/api/interpreter',
-    'https://overpass.nchc.org.tw/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
   ];
-  let txt = '';
+  let payload = null;
   let lastError = null;
   for (const endpoint of endpoints) {
-    try { txt = await get(endpoint, init); break; }
-    catch (error) { lastError = error; }
+    try {
+      const txt = await get(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(q),
+      });
+      payload = JSON.parse(txt);
+      if (Array.isArray(payload.elements)) break;
+      throw new Error('Overpass вернул ответ без списка elements');
+    } catch (e) {
+      lastError = e;
+      console.log(`   источник OSM недоступен (${endpoint}): ${e.message}`);
+    }
   }
-  if (!txt) throw new Error(`Все серверы OpenStreetMap Overpass недоступны: ${lastError?.message || 'нет ответа'}`);
+  if (!payload?.elements) throw lastError || new Error('Все серверы OpenStreetMap недоступны');
+
   const byName = new Map();
-  for (const el of JSON.parse(txt).elements || []) {
+  const seen = new Set();
+  for (const el of payload.elements) {
     const tags = el.tags || {};
     const lat = el.lat ?? el.center?.lat;
     const lon = el.lon ?? el.center?.lon;
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-    // Some OSM stop names are localized or use alternate spelling. Index all known
-    // name variants but keep their coordinates and transport mode mask unchanged.
-    const names = [tags['name:ru'], tags.name, tags['name:be'], tags['name:en'], tags.official_name, tags.alt_name, tags.loc_name]
-      .filter(Boolean).flatMap((value) => String(value).split(';').map((part) => part.trim())).filter(Boolean);
-    for (const name of new Set(names)) {
-      const k = normName(name);
-      if (!k) continue;
-      if (!byName.has(k)) byName.set(k, []);
-      byName.get(k).push([lat, lon, modeMask(tags)]);
-    }
+    const modes = modeMask(tags);
+    const point = [+lat.toFixed(6), +lon.toFixed(6), modes];
+    const entityKey = `${el.type || 'x'}:${el.id || `${lat}:${lon}`}`;
+    if (seen.has(entityKey)) continue;
+    seen.add(entityKey);
+    const aliases = new Set();
+    NAME_TAGS.forEach((tag) => {
+      const raw = tags[tag];
+      if (!raw) return;
+      String(raw).split(/[;|]/).map((v) => v.trim()).filter(Boolean).forEach((v) => aliases.add(v));
+    });
+    aliases.forEach((alias) => {
+      const key = normName(alias);
+      if (!key) return;
+      if (!byName.has(key)) byName.set(key, []);
+      byName.get(key).push(point);
+    });
   }
   return byName;
 }
 
 const BIT = { bus: 1, trolleybus: 2, tram: 4 };
 
+function platformDistanceM(a, b) {
+  const lat = (a[0] + b[0]) / 2;
+  const dx = (a[1] - b[1]) * 111320 * Math.cos(lat * Math.PI / 180);
+  const dy = (a[0] - b[0]) * 110540;
+  return Math.hypot(dx, dy);
+}
+
+function mergePlatform(target, point) {
+  const hit = target.find((p) => platformDistanceM(p, point) <= 7);
+  if (hit) hit[2] = (hit[2] || 0) | (point[2] || 0);
+  else target.push([+point[0].toFixed(6), +point[1].toFixed(6), point[2] || 0]);
+}
+
+function choosePrimaryPlatformCluster(platforms, preferred) {
+  const clusters = [];
+  for (const point of platforms) {
+    const hits = clusters.filter((cluster) => cluster.some((p) => platformDistanceM(p, point) <= 150));
+    hits.forEach((hit) => clusters.splice(clusters.indexOf(hit), 1));
+    clusters.push([point, ...hits.flat()]);
+  }
+  if (!clusters.length) return null;
+  const center = (cluster) => [
+    cluster.reduce((sum, p) => sum + p[0], 0) / cluster.length,
+    cluster.reduce((sum, p) => sum + p[1], 0) / cluster.length,
+  ];
+  let best = clusters.sort((a, b) => b.length - a.length)[0];
+  if (preferred && Number.isFinite(preferred.lat) && Number.isFinite(preferred.lng)) {
+    best = clusters.reduce((chosen, cluster) => {
+      const c = center(cluster), old = center(chosen);
+      const dc = platformDistanceM(c, [preferred.lat, preferred.lng, 0]);
+      const do_ = platformDistanceM(old, [preferred.lat, preferred.lng, 0]);
+      return dc < do_ ? cluster : chosen;
+    }, best);
+  }
+  return center(best);
+}
+
 function applyCoords(stops, coords, prevPos) {
   let withCoords = 0;
+  let newlyGeocoded = 0;
+  let platformCount = 0;
   const unmatched = [];
   for (const s of stops) {
-    delete s.lat; delete s.lng; delete s.platforms;
-    const list = coords?.get(normName(s.name));
-    if (list?.length) {
-      // оставляем только те точки OSM, где останавливается транспорт этой остановки (трамвайные не попадают на автобусные)
-      const stopMask = (s.types || []).reduce((a, t) => a | (BIT[t] || 0), 0);
-      let usable = list.filter(([, , m]) => !m || (m & stopMask));
-      if (!usable.length) usable = list;
-      // склеиваем только точные дубли (менее ~8 м): знак + платформа + stop_position в одном месте
-      const pts = [];
-      for (const [la, lo, m] of usable) {
-        const hit = pts.find((p) => Math.abs(p[0] - la) < 0.00007 && Math.abs(p[1] - lo) < 0.00013);
-        if (hit) { hit[2] |= m; continue; }
-        pts.push([+la.toFixed(6), +lo.toFixed(6), m]);
+    const previous = prevPos?.get(String(s.id)) || s;
+    const oldPlatforms = Array.isArray(previous.platforms) ? previous.platforms : [];
+    const list = coords?.get(normName(s.name)) || [];
+    const stopMask = (s.types || []).reduce((a, t) => a | (BIT[t] || 0), 0);
+    let usable = list.filter(([, , modes]) => !modes || !stopMask || (modes & stopMask));
+    if (!usable.length) usable = list;
+
+    // Не удаляем ранее проверенные координаты: новые данные OSM только дополняют их.
+    const merged = [];
+    oldPlatforms.forEach((p) => {
+      if (Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])) {
+        mergePlatform(merged, [p[0], p[1], p[2] || 0]);
       }
-      s.platforms = pts.slice(0, 8);
-      s.lat = pts.reduce((a, c) => a + c[0], 0) / pts.length;
-      s.lng = pts.reduce((a, c) => a + c[1], 0) / pts.length;
-    } else if (prevPos?.get(String(s.id))?.lat != null) {
-      const o = prevPos.get(String(s.id));
-      s.lat = o.lat; s.lng = o.lng; if (o.platforms) s.platforms = o.platforms;
+    });
+    usable.forEach((p) => mergePlatform(merged, p));
+
+    if (merged.length) {
+      s.platforms = merged; // без прежнего лимита в 8 платформ
+      const preferred = Number.isFinite(previous.lat) && Number.isFinite(previous.lng)
+        ? { lat: previous.lat, lng: previous.lng } : null;
+      const primary = choosePrimaryPlatformCluster(merged, preferred);
+      if (primary) { s.lat = primary[0]; s.lng = primary[1]; }
+      if (usable.length) newlyGeocoded++;
+    } else if (Number.isFinite(previous.lat) && Number.isFinite(previous.lng)) {
+      s.lat = previous.lat;
+      s.lng = previous.lng;
+      if (oldPlatforms.length) s.platforms = oldPlatforms;
+    } else {
+      delete s.lat;
+      delete s.lng;
+      if (oldPlatforms.length) s.platforms = oldPlatforms;
+      else delete s.platforms;
     }
-    if (s.lat != null) withCoords++; else unmatched.push(s.name);
+
+    if (Number.isFinite(s.lat) && Number.isFinite(s.lng)) withCoords++;
+    else unmatched.push(s.name);
+    platformCount += s.platforms?.length || 0;
   }
-  return { withCoords, unmatched };
+  return { withCoords, newlyGeocoded, platformCount, unmatched };
 }
 
 async function main() {
@@ -280,17 +356,14 @@ async function main() {
 
   if (args['coords-only']) {
     const prev = JSON.parse(fs.readFileSync(OUT, 'utf8'));
-    console.log('Координаты из OpenStreetMap…');
+    console.log('Координаты и дополнительные платформы из OpenStreetMap…');
     const coords = await fetchOsmCoords();
-    const prevPos = new Map((prev.stops || []).map((s) => [String(s.id), {
-    lat: s.lat, lng: s.lng, platforms: Array.isArray(s.platforms) ? s.platforms.map((point) => [...point]) : undefined,
-  }]));
-    if (!coords.size) throw new Error('Overpass вернул 0 объектов. Исходный файл не изменён.');
+    const prevPos = new Map((prev.stops || []).map((stop) => [String(stop.id), stop]));
     const r = applyCoords(prev.stops, coords, prevPos);
-    prev.meta = { ...(prev.meta || {}), coordsSource: 'OpenStreetMap · расширенный импорт', coordsFetchedAt: new Date().toISOString() };
+    prev.meta = { ...(prev.meta || {}), coordsSource: 'OpenStreetMap · расширенный импорт платформ', coordsUpdatedAt: new Date().toISOString() };
     fs.writeFileSync(OUT, JSON.stringify(prev), 'utf8');
-    fs.writeFileSync('tools/report.txt', `Остановок: ${prev.stops.length}\nС координатами: ${r.withCoords}\nБез координат (${r.unmatched.length}):\n${r.unmatched.join('\n')}\n`, 'utf8');
-    console.log(`Готово: с координатами ${r.withCoords} из ${prev.stops.length}. Платформ (обе стороны) сохранены.`);
+    fs.writeFileSync('tools/report.txt', `Остановок: ${prev.stops.length}\nС координатами: ${r.withCoords}\nНовых остановок геокодировано: ${r.newlyGeocoded}\nВсего платформ: ${r.platformCount}\nБез координат (${r.unmatched.length}):\n${r.unmatched.join('\n')}\n`, 'utf8');
+    console.log(`Готово: координаты есть у ${r.withCoords} из ${prev.stops.length}; добавлены координаты для ${r.newlyGeocoded} остановок; платформ: ${r.platformCount}.`);
     return;
   }
 
@@ -331,22 +404,15 @@ async function main() {
   const { routes, unresolved } = await buildRoutes(nameToId);
 
   let coords = new Map();
-  let coordsFetched = false;
   if (args.coords) {
     console.log('4/5 Координаты из OpenStreetMap…');
-    try {
-      coords = await fetchOsmCoords();
-      coordsFetched = coords.size > 0;
-      if (!coordsFetched) console.log('   Overpass вернул 0 объектов; старые координаты будут сохранены.');
-    } catch (e) { console.log('   Overpass недоступен:', e.message); }
+    try { coords = await fetchOsmCoords(); } catch (e) { console.log('   Overpass недоступен:', e.message); }
   } else console.log('4/5 Координаты пропущены (добавьте ключ --coords)');
 
   console.log('5/5 Сохранение…');
   let prev = { stops: [], timetables: [], routes: [] };
   try { prev = JSON.parse(fs.readFileSync(OUT, 'utf8')); } catch {}
-  const prevPos = new Map((prev.stops || []).map((s) => [String(s.id), {
-    lat: s.lat, lng: s.lng, platforms: Array.isArray(s.platforms) ? s.platforms.map((point) => [...point]) : undefined,
-  }]));
+  const prevPos = new Map((prev.stops || []).map((s) => [String(s.id), s]));
 
   const stops = stations.map((st) => ({ id: st.id, name: st.name, types: st.types }));
   const { withCoords, unmatched } = applyCoords(stops, coords, prevPos);
@@ -354,12 +420,12 @@ async function main() {
   const keepOld = (prev.timetables || []).filter((t) => t.day !== DAY);
   const days = [...new Set([...keepOld.map((t) => t.day), DAY])];
   const out = {
-    meta: { source: 'ОАО «Витебскоблавтотранс» · raspis.voat.by', coordsSource: coordsFetched ? 'OpenStreetMap · расширенный импорт' : (prev.meta?.coordsSource || 'как раньше'), coordsFetchedAt: coordsFetched ? new Date().toISOString() : (prev.meta?.coordsFetchedAt || null), fetchedAt: new Date().toISOString(), days },
+    meta: { source: 'ОАО «Витебскоблавтотранс» · raspis.voat.by', coordsSource: args.coords ? 'OpenStreetMap · расширенный импорт платформ' : 'как раньше', fetchedAt: new Date().toISOString(), days },
     stops, routes: routes.length ? routes : prev.routes || [], timetables: [...keepOld, ...timetables],
   };
   fs.writeFileSync(OUT, JSON.stringify(out), 'utf8');
   fs.writeFileSync('tools/report.txt',
-    `Остановок: ${stops.length}\nС координатами: ${withCoords}\nБез координат (${unmatched.length}):\n${unmatched.join('\n')}\n\nИмена из маршрутов, не найденные среди остановок (${unresolved.size}):\n${[...unresolved].join('\n')}\n`, 'utf8');
+    `Остановок: ${stops.length}\nС координатами: ${withCoords}\nВсего платформ: ${stops.reduce((n, st) => n + (st.platforms?.length || 0), 0)}\nБез координат (${unmatched.length}):\n${unmatched.join('\n')}\n\nИмена из маршрутов, не найденные среди остановок (${unresolved.size}):\n${[...unresolved].join('\n')}\n`, 'utf8');
   console.log(`Готово: остановок ${stops.length}, с координатами ${withCoords}, расписаний ${timetables.length} (день ${DAY}), маршрутов ${routes.length}.`);
   console.log('Подробности: tools/report.txt. Теперь перезапустите npx expo start --web --clear');
 }

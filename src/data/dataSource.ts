@@ -38,7 +38,12 @@ function clusterPlatforms(pts: P[]): P[][] {
   return clusters;
 }
 
-/** Если у названия несколько удалённых друг от друга групп точек OSM (одинаковые названия) - выбираем ту, что рядом с соседними остановками маршрутов */
+/**
+ * У одного названия может быть несколько реальных площадок: например, разные
+ * стороны перекрёстка или несколько платформ транспортных видов.
+ * Выбираем основную группу только для расчётов маршрута, но НИКОГДА не удаляем
+ * остальные точки: карта должна показывать все найденные платформы.
+ */
 function resolvePlatforms(stops: Stop[], routes: TransportRoute[], stopById: Map<string, Stop>) {
   const nb = new Map<string, Set<string>>();
   routes.forEach((r) => r.directions.forEach((d) => d.stopIds.forEach((id, i) => {
@@ -48,31 +53,69 @@ function resolvePlatforms(stops: Stop[], routes: TransportRoute[], stopById: Map
       nb.get(id)!.add(n);
     });
   })));
+
   const multi: [Stop, P[][]][] = [];
   stops.forEach((s) => {
-    if (s.platforms.length < 2) return;
-    const cl = clusterPlatforms(s.platforms);
-    if (cl.length === 1) { const c = centroid(cl[0]); s.latitude = c.latitude; s.longitude = c.longitude; }
-    else multi.push([s, cl]);
+    if (!s.platforms.length) return;
+    const clusters = clusterPlatforms(s.platforms);
+    if (clusters.length === 1) {
+      const c = centroid(clusters[0]);
+      s.latitude = c.latitude;
+      s.longitude = c.longitude;
+    } else if (clusters.length > 1) {
+      multi.push([s, clusters]);
+    } else if (s.latitude == null || s.longitude == null) {
+      const p = s.platforms[0];
+      s.latitude = p.latitude;
+      s.longitude = p.longitude;
+    }
   });
-  const multiIds = new Set(multi.map((m) => m[0].id));
-  multi.forEach(([s, cl]) => {
+
+  const multiIds = new Set(multi.map(([s]) => s.id));
+  multi.forEach(([s, clusters]) => {
     const refs = Array.from(nb.get(s.id) ?? [])
       .map((id) => stopById.get(id))
       .filter((x): x is Stop => !!x && x.latitude != null && !multiIds.has(x.id));
-    let best = [...cl].sort((a, b) => b.length - a.length)[0];
+    let primary = [...clusters].sort((a, b) => b.length - a.length)[0];
     if (refs.length) {
-      let bs = Infinity;
-      cl.forEach((c) => {
-        const cc = centroid(c);
-        const sc = refs.reduce((a, r) => a + distM(cc, { latitude: r.latitude as number, longitude: r.longitude as number }), 0) / refs.length;
-        if (sc < bs) { bs = sc; best = c; }
+      let bestScore = Infinity;
+      clusters.forEach((cluster) => {
+        const center = centroid(cluster);
+        const score = refs.reduce((sum, ref) => sum + distM(center, {
+          latitude: ref.latitude as number, longitude: ref.longitude as number,
+        }), 0) / refs.length;
+        if (score < bestScore) { bestScore = score; primary = cluster; }
       });
     }
-    s.platforms = best;
-    const ce = centroid(best);
-    s.latitude = ce.latitude; s.longitude = ce.longitude;
+    // Важно: s.platforms остаётся полным исходным массивом, включая все кластеры.
+    const center = centroid(primary);
+    s.latitude = center.latitude;
+    s.longitude = center.longitude;
   });
+}
+
+/** Выбирает группу одноимённых платформ, ближайшую именно к соседям данного направления. */
+function clusterForDirection(s: Stop, prev?: Stop, next?: Stop): P[] {
+  const clusters = clusterPlatforms(s.platforms);
+  if (clusters.length <= 1) return clusters[0] ?? [];
+  const refs = [prev, next].filter((x): x is Stop => !!x && x.latitude != null && x.longitude != null);
+  if (!refs.length) {
+    return clusters.reduce((best, cluster) => {
+      const c = centroid(cluster), b = centroid(best);
+      return distM(c, { latitude: s.latitude as number, longitude: s.longitude as number }) <
+        distM(b, { latitude: s.latitude as number, longitude: s.longitude as number }) ? cluster : best;
+    }, clusters[0]);
+  }
+  return clusters.reduce((best, cluster) => {
+    const center = centroid(cluster), bestCenter = centroid(best);
+    const score = refs.reduce((sum, ref) => sum + distM(center, {
+      latitude: ref.latitude as number, longitude: ref.longitude as number,
+    }), 0) / refs.length;
+    const bestScore = refs.reduce((sum, ref) => sum + distM(bestCenter, {
+      latitude: ref.latitude as number, longitude: ref.longitude as number,
+    }), 0) / refs.length;
+    return score < bestScore ? cluster : best;
+  }, clusters[0]);
 }
 
 const sideKey = (stopId: string, routeId: string, title: string) => `${stopId}|${routeId}|${normTitle(title)}`;
@@ -97,18 +140,25 @@ function buildSideMap(stopById: Map<string, Stop>, routes: TransportRoute[]) {
     if (!s || s.platforms.length < 2 || s.latitude == null) return;
     const prev = stopById.get(d.stopIds[i - 1]);
     const next = stopById.get(d.stopIds[i + 1]);
-    const a = prev && prev.latitude != null ? prev : s;
-    const b = next && next.latitude != null ? next : s;
-    const mlon = mPerLon(s.latitude);
+    // У одинакового названия могут быть несколько удалённых кластеров.
+    // Направление выбирает свой кластер по соседним остановкам маршрута.
+    const localCluster = clusterForDirection(s, prev, next);
+    const center = centroid(localCluster.length ? localCluster : s.platforms);
+    const a = prev && prev.latitude != null ? prev : { ...s, ...center };
+    const b = next && next.latitude != null ? next : { ...s, ...center };
+    const mlon = mPerLon(center.latitude);
     const hx = ((b.longitude as number) - (a.longitude as number)) * mlon;
     const hy = ((b.latitude as number) - (a.latitude as number)) * M_LAT;
     if (Math.hypot(hx, hy) < 5) return;
     const rx = hy, ry = -hx;
     const compat = compatIdx(s, r.type);
-    let best = compat[0] ?? 0, bs = -Infinity;
+    const localSet = new Set(localCluster);
+    const localCompatible = compat.filter((pi) => localSet.has(s.platforms[pi]));
+    const allowed = localCompatible.length ? localCompatible : compat;
+    let best = allowed[0] ?? 0, bs = -Infinity;
     s.platforms.forEach((p, pi) => {
-      if (!compat.includes(pi)) return;
-      const sc = (p.longitude - (s.longitude as number)) * mlon * rx + (p.latitude - (s.latitude as number)) * M_LAT * ry;
+      if (!allowed.includes(pi)) return;
+      const sc = (p.longitude - center.longitude) * mlon * rx + (p.latitude - center.latitude) * M_LAT * ry;
       if (sc > bs) { bs = sc; best = pi; }
     });
     m.set(sideKey(id, r.id, d.title), best);
@@ -181,6 +231,15 @@ function buildReal(raw: any): TransitData | null {
       : typeof s.lat === 'number' ? [{ latitude: s.lat, longitude: s.lng }] : [],
     types: s.types ?? [], isDemo: false,
   }));
+  // Не теряем остановку из-за отсутствующих верхнеуровневых lat/lng,
+  // если в исходном JSON есть координаты хотя бы одной платформы.
+  stops.forEach((stop) => {
+    if ((stop.latitude == null || stop.longitude == null) && stop.platforms.length) {
+      const p = stop.platforms[0];
+      stop.latitude = p.latitude;
+      stop.longitude = p.longitude;
+    }
+  });
   const stopIds = new Set(stops.map((s) => s.id));
 
   const routes = new Map<string, TransportRoute>();
