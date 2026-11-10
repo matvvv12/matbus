@@ -13,6 +13,7 @@ import { usePlaces } from '../theme/PlacesContext';
 import { withAlpha } from '../theme/themes';
 import { loadTransitData } from '../data/dataSource';
 import { DAY_LABEL } from '../models/stop';
+import { TransportType } from '../models/transport';
 import { PLACE_META, RoutePlace, pointOf } from '../models/place';
 import { distanceMeters, formatDistance } from '../services/geo';
 import { addCalendarDays, dateChipLabel, dateLongLabel, dayTypeOf, formatTime } from '../services/schedule';
@@ -21,6 +22,7 @@ import { useUserLocation } from '../hooks/useUserLocation';
 
 const TAGS = { fastest: 'Самый быстрый', fewest: 'Минимум пересадок', leastWalk: 'Минимум пешком', walk: 'Пешком', alt: 'От другой остановки' } as const;
 const DATE_RANGE = 14;
+const CITY_TYPES: TransportType[] = ['bus', 'trolleybus', 'tram'];
 
 const clockInput = (date: Date) => `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 const parseClockInput = (value: string): number | null => {
@@ -44,7 +46,9 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
   const [dateOffset, setDateOffset] = useState(0);
   const [departureTime, setDepartureTime] = useState(() => clockInput(new Date()));
   const [clockOpen, setClockOpen] = useState(false);
+  const [routeMode, setRouteMode] = useState<'city' | 'minibus'>('city');
   const [state, setState] = useState<{ phase: 'idle' | 'loading' | 'done'; journeys: Journey[]; message?: string }>({ phase: 'idle', journeys: [] });
+  const searchVersion = useRef(0);
   const [wantSearch, setWantSearch] = useState(false);
   const [autoRun, setAutoRun] = useState(false);
   const spin = useRef(new Animated.Value(0)).current;
@@ -121,22 +125,28 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
     if (ends === 'ME') { setWantSearch(true); request(); return; }
     if (typeof ends === 'string') { setState({ phase: 'done', journeys: [], message: ends }); return; }
 
+    const version = ++searchVersion.current;
+    const allowedTypes: readonly TransportType[] = routeMode === 'city' ? CITY_TYPES : ['minibus'];
     setState({ phase: 'loading', journeys: [] });
     setTimeout(() => {
-      const r = planJourneys(data, ends.origins, ends.dests, depart, day, ends.direct, { from: ctxRef.current.from, to: ctxRef.current.to });
+      if (version !== searchVersion.current) return;
+      const r = planJourneys(data, ends.origins, ends.dests, depart, day, ends.direct,
+        { from: ctxRef.current.from, to: ctxRef.current.to }, allowedTypes);
       setState({
         phase: 'done', journeys: r.journeys,
         message: r.reason === 'no-routes'
-          ? 'Нет данных о порядке остановок маршрутов. Выполните: node tools/import-voat.mjs --routes-only'
+          ? 'Не удалось построить маршруты: в данных отсутствует порядок остановок. Проверьте загрузку маршрутов.'
           : r.reason === 'not-found'
-          ? 'Подходящих рейсов по расписанию не найдено (максимум 3 пересадки). Попробуйте другое время или места.'
+          ? routeMode === 'city'
+            ? 'Не найдено подходящих автобусов, троллейбусов или трамваев на выбранное время. Попробуйте другое время или места.'
+            : 'Не найдено подходящих маршруток на выбранное время. Попробуйте другое время или места.'
           : undefined,
       });
     }, 350);
   };
 
   useEffect(() => { if (wantSearch && location) { setWantSearch(false); run(); } }, [location, wantSearch]);
-  useEffect(() => { if (autoRun && from && to) { setAutoRun(false); run(); } }, [autoRun, from, to, departureTime, dateOffset]);
+  useEffect(() => { if (autoRun && from && to) { setAutoRun(false); run(); } }, [autoRun, from, to, departureTime, dateOffset, routeMode]);
 
   const pick = (p: RoutePlace) => {
     if (editing === 'from') setFrom(p); else setTo(p);
@@ -268,6 +278,46 @@ export default function RoutesScreen({ plan, onShowJourney }: { plan?: { from?: 
             <Text style={{ color: '#FF453A', fontSize: 11, marginTop: 8 }}>Выбери время на циферблате.</Text>
           )}
           <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 8 }}>Можно выбрать дату на ближайшие 14 дней и любое время с точностью до минуты.</Text>
+        </GlassCard>
+      </FadeSlideIn>
+
+      <FadeSlideIn delay={160}>
+        <GlassCard radius={20} padding={12}>
+          <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800', marginBottom: 9 }}>Тип транспорта</Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {([
+              { key: 'city' as const, title: 'Городской', detail: 'Автобус · троллейбус · трамвай', icon: 'bus' as const,
+                count: data.routes.filter((route) => CITY_TYPES.includes(route.type)).length, tint: palette.accent },
+              { key: 'minibus' as const, title: 'Маршрутки', detail: 'Только маршрутки', icon: 'car' as const,
+                count: data.routes.filter((route) => route.type === 'minibus').length, tint: '#30D158' },
+            ]).map((tab) => {
+              const active = routeMode === tab.key;
+              return (
+                <PressableScale key={tab.key} style={{ flex: 1 }} onPress={() => {
+                  if (routeMode === tab.key) return;
+                  searchVersion.current += 1;
+                  setRouteMode(tab.key);
+                  setState({ phase: 'idle', journeys: [] });
+                }} scaleTo={0.98}>
+                  <View style={{ minHeight: 72, justifyContent: 'center', paddingHorizontal: 9, paddingVertical: 10,
+                    borderRadius: 15, backgroundColor: active ? withAlpha(tab.tint, 0.18) : withAlpha(colors.text, 0.055),
+                    borderWidth: 1, borderColor: active ? withAlpha(tab.tint, 0.75) : 'transparent' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                      <Ionicons name={tab.icon} size={15} color={active ? tab.tint : colors.subtext} />
+                      <Text style={{ color: active ? colors.text : colors.subtext, fontSize: 11, fontWeight: '800' }}>{tab.title}</Text>
+                      <Text style={{ color: active ? tab.tint : colors.subtext, fontSize: 10, fontWeight: '800' }}>{tab.count}</Text>
+                    </View>
+                    <Text style={{ color: colors.subtext, fontSize: 9, textAlign: 'center', marginTop: 4 }}>{tab.detail}</Text>
+                  </View>
+                </PressableScale>
+              );
+            })}
+          </View>
+          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 8 }}>
+            {routeMode === 'city'
+              ? 'Поиск объединяет автобусы, троллейбусы и трамваи. Маршрутки сюда не попадают.'
+              : 'Поиск выполняется только по маршруткам. Городской транспорт не смешивается с ними.'}
+          </Text>
         </GlassCard>
       </FadeSlideIn>
 

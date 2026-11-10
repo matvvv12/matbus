@@ -1,4 +1,5 @@
 import { DayType, TransitData, TransportRoute } from '../models/stop';
+import type { TransportType } from '../models/transport';
 
 export function dayTypeOf(d: Date): DayType {
   const wd = d.getDay();
@@ -31,7 +32,10 @@ export type StopRouteSchedule = {
 };
 
 /** Ближайшие отправления строго по расписанию (без GPS и без «задержек»). */
-export function nextDepartures(data: TransitData, stopId: string, now: Date, limit = 4, platform?: number): Departure[] {
+export function nextDepartures(
+  data: TransitData, stopId: string, now: Date, limit = 4, platform?: number,
+  allowedTypes?: readonly TransportType[],
+): Departure[] {
   const nowMin = minutesOfDay(now);
   const day = dayTypeOf(now);
   const routeById = new Map(data.routes.map((r) => [r.id, r]));
@@ -40,7 +44,7 @@ export function nextDepartures(data: TransitData, stopId: string, now: Date, lim
     .filter((e) => e.day === day && (platform == null || e.platform == null || e.platform === platform))
     .forEach((e) => {
       const route = routeById.get(e.routeId);
-      if (!route) return;
+      if (!route || (allowedTypes && !allowedTypes.includes(route.type))) return;
       Array.from(new Set(e.times)).filter((t) => t >= nowMin).slice(0, 2).forEach((t) =>
         out.push({
           route,

@@ -1,4 +1,5 @@
 import type { DayType, TimetableEntry, TransitData, TransportRoute } from '../models/stop';
+import type { TransportType } from '../models/transport';
 import { distanceMeters } from './geo';
 import { lastPart, normTitle } from './schedule';
 
@@ -302,7 +303,8 @@ const sig = (j: Journey) => j.legs.map((l) => (l.kind === 'ride' ? `${l.route.id
 export function planJourneys(
   data: TransitData, origins: Origin[], dests: Origin[], depart: number, day: DayType,
   direct?: { meters: number; fromLabel: string; toLabel: string },
-  ends?: { from: LatLon | null; to: LatLon | null }
+  ends?: { from: LatLon | null; to: LatLon | null },
+  allowedTypes?: readonly TransportType[],
 ): { journeys: Journey[]; reason?: 'no-routes' | 'not-found' } {
   let walkJ: Journey | null = null;
   if (direct && direct.meters <= 1800) {
@@ -313,8 +315,16 @@ export function planJourneys(
     };
   }
 
-  const dirs = buildDirs(data, day);
-  if (!dirs.length) return { journeys: walkJ ? [walkJ] : [], reason: walkJ ? undefined : 'no-routes' };
+  // Вид транспорта выбирается до поиска, а не после сортировки результатов:
+  // маршрутки не смогут вытеснить городской транспорт из выдачи и наоборот.
+  const allDirs = buildDirs(data, day);
+  const dirs = allDirs.filter((dir) => !allowedTypes || allowedTypes.includes(dir.route.type));
+  if (!dirs.length) {
+    return {
+      journeys: walkJ ? [walkJ] : [],
+      reason: walkJ ? undefined : allDirs.length ? 'not-found' : 'no-routes',
+    };
+  }
 
   const destMap = new Map(dests.map((d) => [d.stopId, d]));
   // Сначала считаем варианты от БЛИЖАЙШЕЙ остановки. Остальные остановки — только как запасные варианты.

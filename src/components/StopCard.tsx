@@ -25,6 +25,7 @@ type Props = {
   onOpenRoute: (routeId: string, directionIndex?: number) => void;
 };
 
+const CITY_TYPES: TransportType[] = ['bus', 'trolleybus', 'tram'];
 const TYPE_ORDER: TransportType[] = ['bus', 'trolleybus', 'tram', 'minibus'];
 const DATE_RANGE = 14;
 
@@ -54,36 +55,45 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
     () => routesAtStop(data, stop.id),
     [data, stop.id]
   );
-  const routeTypes = useMemo(
-    () => TYPE_ORDER.filter((type) => routesHere.some((route) => route.type === type)),
-    [routesHere]
-  );
-  const [activeType, setActiveType] = useState<TransportType | null>(routeTypes[0] ?? null);
+  const [transportGroup, setTransportGroup] = useState<'city' | 'minibus'>('city');
+  const [activeType, setActiveType] = useState<TransportType | 'all'>('all');
   const [activeRouteId, setActiveRouteId] = useState<string | null>(null);
   const [dateOffset, setDateOffset] = useState(0);
   const selectedDate = useMemo(() => addCalendarDays(now, dateOffset), [now.getFullYear(), now.getMonth(), now.getDate(), dateOffset]);
   const selectedDay = dayTypeOf(selectedDate);
   const dayLoaded = data.daysLoaded.includes(selectedDay);
-  const activeRoutes = routesHere.filter((route) => route.type === activeType);
-  const activeRoute = routesHere.find((route) => route.id === activeRouteId) ?? null;
+  const groupTypes: TransportType[] = transportGroup === 'city' ? CITY_TYPES : ['minibus'];
+  const groupRoutes = useMemo(
+    () => routesHere.filter((route) => groupTypes.includes(route.type)),
+    [routesHere, transportGroup]
+  );
+  const routeTypes = useMemo(
+    () => TYPE_ORDER.filter((type) => groupTypes.includes(type) && groupRoutes.some((route) => route.type === type)),
+    [groupRoutes, transportGroup]
+  );
+  const activeRoutes = groupRoutes.filter((route) => activeType === 'all' || route.type === activeType);
+  const activeRoute = groupRoutes.find((route) => route.id === activeRouteId) ?? null;
   const selectedSchedule = useMemo(
     () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate) : [],
     [data, stop.id, activeRouteId, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
   );
   const selectedScheduleCount = selectedSchedule.reduce((sum, group) => sum + group.times.length, 0);
   const hasRouteTimetable = activeRouteId != null && (data.byStop.get(stop.id) ?? []).some((entry) => entry.routeId === activeRouteId);
-  const nearestDepartures = nextDepartures(data, stop.id, now, 12);
-  // Показываем рейсы с обеих сторон: неверно выбранная платформа не должна скрывать троллейбус или автобус.
-  const nearestByType = nextDepartureByType(data, stop.id, now);
+  // Ограничение выполняется после фильтра по группе транспорта внутри nextDepartures.
+  // Маршрутки больше не могут занять первые строки и вытеснить городской транспорт.
+  const nearestDepartures = nextDepartures(data, stop.id, now, 12, undefined, groupTypes);
+  // Берём ближайший рейс каждого вида внутри выбранной вкладки.
+  const nearestByType = nextDepartureByType(data, stop.id, now)
+    .filter((departure) => groupTypes.includes(departure.route.type));
   const selectedDateIsToday = dateOffset === 0;
   const todayMin = minutesOfDay(now);
 
   useEffect(() => {
-    if (!activeType || !routeTypes.includes(activeType)) setActiveType(routeTypes[0] ?? null);
-  }, [stop.id, routeTypes.join('|')]);
+    if (activeType !== 'all' && !routeTypes.includes(activeType)) setActiveType('all');
+  }, [stop.id, transportGroup, routeTypes.join('|')]);
   useEffect(() => {
     setActiveRouteId(null);
-  }, [stop.id, activeType]);
+  }, [stop.id, activeType, transportGroup]);
   useEffect(() => {
     setDateOffset(0);
   }, [stop.id]);
@@ -170,8 +180,38 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
           </View>
         )}
 
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 13 }}>
+          {([
+            { key: 'city' as const, title: 'Городской', subtitle: 'Автобус · троллейбус · трамвай', icon: 'bus' as const,
+              count: routesHere.filter((route) => CITY_TYPES.includes(route.type)).length },
+            { key: 'minibus' as const, title: 'Маршрутки', subtitle: 'Отдельное расписание', icon: 'car' as const,
+              count: routesHere.filter((route) => route.type === 'minibus').length },
+          ]).map((tab) => {
+            const active = transportGroup === tab.key;
+            const tint = tab.key === 'minibus' ? TRANSPORT_META.minibus.color : palette.accent;
+            return (
+              <PressableScale key={tab.key} style={{ flex: 1 }} onPress={() => {
+                setTransportGroup(tab.key);
+                setActiveType('all');
+                setActiveRouteId(null);
+              }} scaleTo={0.98}>
+                <View style={{ borderRadius: 15, paddingHorizontal: 10, paddingVertical: 10,
+                  backgroundColor: active ? withAlpha(tint, 0.17) : withAlpha(colors.text, 0.055),
+                  borderWidth: 1, borderColor: active ? withAlpha(tint, 0.7) : 'transparent' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                    <Ionicons name={tab.icon} size={14} color={active ? tint : colors.subtext} />
+                    <Text style={{ color: active ? colors.text : colors.subtext, fontSize: 11, fontWeight: '800' }}>{tab.title}</Text>
+                    <Text style={{ color: active ? tint : colors.subtext, fontSize: 10, fontWeight: '800' }}>{tab.count}</Text>
+                  </View>
+                  <Text style={{ color: colors.subtext, fontSize: 9, textAlign: 'center', marginTop: 3 }}>{tab.subtitle}</Text>
+                </View>
+              </PressableScale>
+            );
+          })}
+        </View>
+
         <View style={{ marginTop: 13, gap: 9 }}>
-          <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайший транспорт по видам</Text>
+          <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайшие отправления</Text>
           <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Учитываются обе стороны остановки — ни один вид транспорта не скрывается из-за выбранной платформы.</Text>
           {nearestByType.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
@@ -214,15 +254,23 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
         <View style={{ marginTop: 14, gap: 9 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <Text style={{ color: colors.text, fontSize: 14, fontWeight: '800' }}>Транспорт на остановке</Text>
-            <Text style={{ color: colors.subtext, fontSize: 11 }}>{routesHere.length} маршрутов</Text>
+            <Text style={{ color: colors.subtext, fontSize: 11 }}>{groupRoutes.length} маршрутов</Text>
           </View>
-          {routeTypes.length > 0 ? (
+          {groupRoutes.length > 0 ? (
             <>
+              {transportGroup === 'city' && routeTypes.length > 1 && (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7 }}>
+                <PressableScale onPress={() => { setActiveType('all'); setActiveRouteId(null); }} scaleTo={0.96}>
+                  <View style={{ paddingHorizontal: 12, paddingVertical: 9, borderRadius: 14,
+                    backgroundColor: activeType === 'all' ? withAlpha(palette.accent, 0.22) : withAlpha(colors.text, 0.07),
+                    borderWidth: 1, borderColor: activeType === 'all' ? palette.accent : 'transparent' }}>
+                    <Text style={{ color: colors.text, fontSize: 12, fontWeight: '800' }}>Все · {groupRoutes.length}</Text>
+                  </View>
+                </PressableScale>
                 {routeTypes.map((type) => {
                   const meta = TRANSPORT_META[type];
                   const active = activeType === type;
-                  const count = routesHere.filter((route) => route.type === type).length;
+                  const count = groupRoutes.filter((route) => route.type === type).length;
                   return (
                     <PressableScale key={type} onPress={() => { setActiveType(type); setActiveRouteId(null); }} scaleTo={0.96}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 11, paddingVertical: 9,
@@ -236,6 +284,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
                   );
                 })}
               </ScrollView>
+              )}
 
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7 }}>
                 {activeRoutes.map((route) => {
@@ -330,7 +379,11 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
               )}
             </>
           ) : (
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Для этой остановки маршруты ещё не связаны с расписанием.</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>
+              {transportGroup === 'city'
+                ? 'На этой остановке не найдено городских автобусов, троллейбусов или трамваев.'
+                : 'На этой остановке не найдено маршруток.'}
+            </Text>
           )}
         </View>
 
