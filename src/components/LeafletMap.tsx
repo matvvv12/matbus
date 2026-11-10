@@ -8,6 +8,10 @@ export type MapProps = {
   selectedId: string | null;
   selectedPlatform: number | null;
   user: LatLng | null;
+  userAccuracy?: number | null;
+  userHeading?: number | null;
+  followUser?: boolean;
+  onMapInteraction?: () => void;
   focus: (LatLng & { nonce: number }) | null;
   dark: boolean;
   accent: string;

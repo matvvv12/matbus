@@ -29,10 +29,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Type-check source
+        run: npm run typecheck
+
+      - name: Audit transit data
+        run: npm run audit:data
+
       - name: Build Expo web app
-        run: npx expo export --platform web
+        run: npm run build:web
         env:
           EXPO_NO_TELEMETRY: 1
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
       - name: Disable Jekyll processing
         run: touch dist/.nojekyll

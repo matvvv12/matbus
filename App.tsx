@@ -65,7 +65,7 @@ function Root() {
       >
         {/* Карта остаётся смонтированной, чтобы не перезагружаться при переключении вкладок */}
         <View style={{ flex: 1, display: tab === 'map' ? 'flex' : 'none' }}>
-          <MapScreen pendingStop={pendingStop} pick={pick} onPlan={planRoute} onPickDone={pickDone} journey={journeyView} onCloseJourney={closeJourney} />
+          <MapScreen active={tab === 'map'} pendingStop={pendingStop} pick={pick} onPlan={planRoute} onPickDone={pickDone} journey={journeyView} onCloseJourney={closeJourney} />
         </View>
         {tab === 'routes' && <RoutesScreen plan={plan} onShowJourney={showJourney} />}
         {tab === 'transport' && <TransportScreen onOpenStop={openStop} pendingRoute={pendingRoute} />}

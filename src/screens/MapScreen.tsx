@@ -32,7 +32,7 @@ type Pin = { latitude: number; longitude: number; label: string | null };
 export type PickRequest = { type: PlaceType; title?: string; id?: string; nonce: number };
 
 export default function MapScreen({
-  pendingStop, pick, onPlan, onPickDone, journey, onCloseJourney,
+  pendingStop, pick, onPlan, onPickDone, journey, onCloseJourney, active = true,
 }: {
   pendingStop?: { id: string; nonce: number } | null;
   pick?: PickRequest | null;
@@ -40,12 +40,14 @@ export default function MapScreen({
   onPickDone: () => void;
   journey?: JourneyView | null;
   onCloseJourney: () => void;
+  active?: boolean;
 }) {
   const insets = useInsets();
   const { colors, palette, scheme } = useTheme();
   const { isFavorite, toggle } = useFavorites();
   const data = useMemo(() => loadTransitData(), []);
-  const { location, status, request } = useUserLocation();
+  const { location, accuracy, heading, status, watching, request } = useUserLocation(active);
+  const [followUser, setFollowUser] = useState(false);
 
   const [now, setNow] = useState(new Date());
   const [query, setQuery] = useState('');
@@ -86,7 +88,11 @@ export default function MapScreen({
     const anchor = pin ?? location;
     if (!anchor) return [];
     return mappedStops
-      .map((s) => ({ stop: s, dist: distanceMeters(anchor, s as any) }))
+      .map((stop) => {
+        const points = stop.platforms.length ? stop.platforms : [{ latitude: stop.latitude as number, longitude: stop.longitude as number }];
+        const dist = Math.min(...points.map((point) => distanceMeters(anchor, point)));
+        return { stop, dist };
+      })
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 8);
   }, [location, pin, mappedStops]);
@@ -101,6 +107,13 @@ export default function MapScreen({
     if (p) setFocus({ latitude: p.latitude, longitude: p.longitude, nonce: Date.now() });
   }, []);
 
+  const locateUser = useCallback(() => {
+    setFollowUser(true);
+    request();
+  }, [request]);
+
+  const onMapInteraction = useCallback(() => setFollowUser(false), []);
+
   const select = useCallback((stop: Stop, pi?: number) => {
     let idx = pi ?? 0;
     const loc = locRef.current;
@@ -112,6 +125,7 @@ export default function MapScreen({
       });
     }
     setRoutePreview(null);
+    setFollowUser(false);
     setSelectedId(stop.id);
     setSelectedPi(idx);
     focusPlatform(stop, idx);
@@ -131,9 +145,6 @@ export default function MapScreen({
     if (s) select(s);
   }, [pendingStop?.nonce]);
 
-  useEffect(() => {
-    if (location) setFocus({ ...location, nonce: Date.now() });
-  }, [location]);
 
   useEffect(() => {
     if (!journey) { setGeom(null); setGeomLoading(false); return; }
@@ -216,6 +227,10 @@ export default function MapScreen({
         selectedId={selectedId}
         selectedPlatform={selectedPi}
         user={location}
+        userAccuracy={accuracy}
+        userHeading={heading}
+        followUser={followUser}
+        onMapInteraction={onMapInteraction}
         focus={focus}
         dark={scheme === 'dark'}
         accent={palette.accent}
@@ -243,11 +258,11 @@ export default function MapScreen({
                   <Ionicons name="close-circle" size={18} color={colors.subtext} />
                 </PressableScale>
               )}
-              <PressableScale onPress={request} hitSlop={8}>
+              <PressableScale onPress={locateUser} hitSlop={8}>
                 <Ionicons
                   name={location ? 'locate' : 'locate-outline'}
                   size={22}
-                  color={status === 'loading' ? colors.subtext : palette.accent}
+                  color={status === 'loading' ? colors.subtext : followUser ? '#0A84FF' : palette.accent}
                 />
               </PressableScale>
             </View>
@@ -451,20 +466,24 @@ export default function MapScreen({
           </FadeSlideIn>
         ) : (
           <FadeSlideIn>
-            <PressableScale onPress={request} scaleTo={0.98}>
+            <PressableScale onPress={locateUser} scaleTo={0.98}>
               <GlassCard radius={22} padding={14}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Ionicons name="locate" size={22} color={palette.accent} />
                   <View style={{ marginLeft: 12, flex: 1 }}>
                     <Text style={{ color: colors.text, fontWeight: '700', fontSize: 15 }}>
-                      {status === 'loading' ? 'Определяем местоположение…' : 'Показать ближайшие остановки'}
+                      {status === 'loading' ? 'Определяем местоположение…' : watching ? 'GPS отслеживает ваше движение' : location ? 'Показать моё местоположение' : 'Показать ближайшие остановки'}
                     </Text>
                     <Text style={{ color: colors.subtext, fontSize: 12, marginTop: 2 }}>
                       {status === 'denied'
-                        ? 'Доступ к геолокации запрещён. Разрешите его в настройках (в Telegram: Настройки → Конфиденциальность → Геопозиция).'
+                        ? 'Доступ к геолокации запрещён. Разрешите геопозицию для Telegram или браузера в настройках телефона.'
                         : status === 'error'
-                        ? 'Не удалось определить местоположение. Нажмите, чтобы повторить.'
-                        : 'Нажмите, чтобы определить, где вы находитесь. Или выберите остановку на карте.'}
+                        ? 'Не удалось определить местоположение. Проверьте GPS и интернет, затем повторите.'
+                        : watching
+                        ? `Точность GPS: ${accuracy == null ? 'определяется' : `±${Math.round(accuracy)} м`}. Слежение можно вернуть кнопкой геолокации.`
+                        : location
+                        ? 'Местоположение найдено. Нажмите, чтобы снова следить за движением.'
+                        : 'Нажмите, чтобы включить GPS и увидеть ближайшие остановки. Или выберите остановку на карте.'}
                     </Text>
                   </View>
                 </View>

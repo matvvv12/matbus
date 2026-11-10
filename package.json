@@ -26,7 +26,10 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit --pretty false",
+    "build:web": "node node_modules/expo/bin/cli export --platform web",
+    "audit:data": "node tools/audit-data.mjs"
   },
   "private": true
 }
