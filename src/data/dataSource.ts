@@ -231,11 +231,90 @@ function buildDemo(): TransitData {
   };
 }
 
+function normalizeStopNameForMerge(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/ё/g, 'е')
+    .replace(/^\\s*(?:ул\\.?|улица)\\s+/u, '')
+    .replace(/[^a-zа-я0-9]+/gu, ' ').trim().replace(/\\s+/g, ' ');
+}
+
+function samePlatformFootprint(a: Stop, b: Stop): boolean {
+  if (!a.platforms.length || !b.platforms.length) return false;
+  const matches = (left: P[], right: P[]) => left.filter((point) =>
+    right.some((candidate) => distM(point, candidate) <= 4)
+  ).length;
+  const matched = Math.min(matches(a.platforms, b.platforms), matches(b.platforms, a.platforms));
+  return matched / Math.max(a.platforms.length, b.platforms.length) >= 0.8;
+}
+
+/**
+ * Collapse only high-confidence duplicate feed records: same normalized name,
+ * same physical centre and virtually identical platform coordinates. Nearby
+ * stops with different footprints (including opposite road sides) stay separate.
+ */
+function mergeDuplicateStops(sourceStops: Stop[]): {
+  stops: Stop[];
+  canonicalBySourceId: Map<string, string>;
+} {
+  const groups: Stop[][] = [];
+  sourceStops.forEach((stop) => {
+    const name = normalizeStopNameForMerge(stop.name);
+    const hit = groups.find((group) => {
+      const candidate = group[0];
+      if (!name || name !== normalizeStopNameForMerge(candidate.name)) return false;
+      if (stop.latitude == null || stop.longitude == null ||
+          candidate.latitude == null || candidate.longitude == null) return false;
+      return distM(
+        { latitude: stop.latitude, longitude: stop.longitude },
+        { latitude: candidate.latitude, longitude: candidate.longitude },
+      ) <= 5 && samePlatformFootprint(stop, candidate);
+    });
+    if (hit) hit.push(stop);
+    else groups.push([stop]);
+  });
+
+  const canonicalBySourceId = new Map<string, string>();
+  const stops = groups.map((group) => {
+    // Prefer the clearest, least abbreviated display name while preserving its ID.
+    const ordered = [...group].sort((a, b) => {
+      const aPenalty = /^\\s*(?:ул\\.?|улица)\\s+/iu.test(a.name) ? 1 : 0;
+      const bPenalty = /^\\s*(?:ул\\.?|улица)\\s+/iu.test(b.name) ? 1 : 0;
+      return aPenalty - bPenalty || a.name.length - b.name.length || a.id.localeCompare(b.id, 'en', { numeric: true });
+    });
+    const primary = ordered[0];
+    const aliases = group.map((stop) => normalizeId(stop.id)).filter((id) => id && id !== primary.id);
+    group.forEach((stop) => canonicalBySourceId.set(normalizeId(stop.id), primary.id));
+    if (group.length === 1) return { ...primary };
+    const platforms = dedupePlatformPoints(group.flatMap((stop) => stop.platforms));
+    const types = Array.from(new Set(group.flatMap((stop) => stop.types)));
+    const bestCoordinates = platforms.length ? centroid(platforms) : {
+      latitude: primary.latitude as number, longitude: primary.longitude as number,
+    };
+    return {
+      ...primary,
+      latitude: bestCoordinates.latitude,
+      longitude: bestCoordinates.longitude,
+      platforms,
+      types,
+      aliases: Array.from(new Set([...(primary.aliases ?? []), ...aliases])),
+    };
+  });
+  return { stops, canonicalBySourceId };
+}
+
+function buildStopLookup(stops: Stop[]): Map<string, Stop> {
+  const lookup = new Map<string, Stop>();
+  stops.forEach((stop) => {
+    lookup.set(normalizeId(stop.id), stop);
+    (stop.aliases ?? []).forEach((alias) => lookup.set(normalizeId(alias), stop));
+  });
+  return lookup;
+}
+
 function buildReal(raw: any): TransitData | null {
   const stopsRaw: any[] = raw?.stops ?? [];
   if (!stopsRaw.length) return null;
 
-  const stops: Stop[] = stopsRaw.map((s) => ({
+  const rawStops: Stop[] = stopsRaw.map((s) => ({
     id: normalizeId(s.id), name: String(s.name ?? '').trim(), address: '',
     latitude: typeof s.lat === 'number' ? s.lat : null,
     longitude: typeof s.lng === 'number' ? s.lng : null,
@@ -244,16 +323,19 @@ function buildReal(raw: any): TransitData | null {
       : typeof s.lat === 'number' ? [{ latitude: s.lat, longitude: s.lng }] : []),
     types: Array.isArray(s.types) ? s.types.filter(isTransportType) : [], isDemo: false,
   }));
-  // Не теряем остановку из-за отсутствующих верхнеуровневых lat/lng,
-  // если в исходном JSON есть координаты хотя бы одной платформы.
-  stops.forEach((stop) => {
+  // Keep stops with platform coordinates even when the source omitted centre coordinates.
+  rawStops.forEach((stop) => {
     if ((stop.latitude == null || stop.longitude == null) && stop.platforms.length) {
       const p = stop.platforms[0];
       stop.latitude = p.latitude;
       stop.longitude = p.longitude;
     }
   });
-  const stopIds = new Set(stops.map((s) => s.id));
+  const { stops, canonicalBySourceId } = mergeDuplicateStops(rawStops);
+  const sourceStopIds = new Set(rawStops.map((stop) => normalizeId(stop.id)));
+  const stopIds = new Set(stops.map((stop) => stop.id));
+  const canonicalStopId = (id: unknown) => canonicalBySourceId.get(normalizeId(id)) ?? normalizeId(id);
+  const stopByIdTmp = buildStopLookup(stops);
 
   const routes = new Map<string, TransportRoute>();
   (raw.routes ?? []).forEach((r: any) => {
@@ -263,7 +345,9 @@ function buildReal(raw: any): TransitData | null {
       id: routeId, number: String(r.number ?? '').trim(), type: r.type, isDemo: false,
       directions: (Array.isArray(r.directions) ? r.directions : []).map((d: any) => ({
         title: String(d.title ?? '').trim(),
-        stopIds: (Array.isArray(d.stopIds) ? d.stopIds : []).map(normalizeId).filter(Boolean),
+        // Merge source aliases but keep the route's stop order unchanged otherwise.
+        stopIds: (Array.isArray(d.stopIds) ? d.stopIds : []).map(canonicalStopId).filter(Boolean)
+          .filter((id: string, index: number, list: string[]) => index === 0 || id !== list[index - 1]),
       })),
     });
   });
@@ -284,7 +368,6 @@ function buildReal(raw: any): TransitData | null {
     ]));
   });
 
-  const stopByIdTmp = new Map(stops.map((x) => [x.id, x]));
   resolvePlatforms(stops, Array.from(routes.values()), stopByIdTmp);
   const sideMap = buildSideMap(stopByIdTmp, Array.from(routes.values()));
   const platformFor = (stopId: string, routeId: string, title: string): number | undefined => {
@@ -302,9 +385,11 @@ function buildReal(raw: any): TransitData | null {
   const timetables: TimetableEntry[] = [];
   const rawTimetableGroups = new Map<string, any[]>();
   (raw.timetables ?? []).forEach((t: any) => {
-    const stopId = normalizeId(t.stopId);
+    const sourceStopId = normalizeId(t.stopId);
+    const stopId = canonicalStopId(sourceStopId);
     const routeId = normalizeId(t.routeId);
-    if (!stopIds.has(stopId) || !routeId || !Array.isArray(t.times) || !t.times.length) return;
+    if (!sourceStopIds.has(sourceStopId) || !stopIds.has(stopId) || !routeId ||
+        !Array.isArray(t.times) || !t.times.length) return;
     if (!ALL_DAYS.includes(t.day)) return;
     if (!routes.has(routeId)) {
       const [type, ...rest] = routeId.split('-');
@@ -354,7 +439,7 @@ function buildReal(raw: any): TransitData | null {
 
   const daysLoaded = Array.from(new Set(timetables.map((t) => t.day))) as DayType[];
   return {
-    stops, stopById: new Map(stops.map((x) => [x.id, x])), routes: Array.from(routes.values()), timetables, byStop: indexByStop(timetables),
+    stops, stopById: stopByIdTmp, routes: Array.from(routes.values()), timetables, byStop: indexByStop(timetables),
     daysLoaded, isDemo: false,
     sourceName: raw?.meta?.minibusSource
       ? `${raw?.meta?.source || 'Данные расписаний'} · маршрутки: GoOnBus / Aavtobus`
