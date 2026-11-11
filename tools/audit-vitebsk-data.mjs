@@ -68,21 +68,25 @@ const trolleyStops = stops.filter((s) => (routeStops.get(`${s.id}|trolleybus`) |
 const trolleyWithoutTimes = trolleyStops.filter((s) => !timetable.some((t) => String(t.stopId) === String(s.id) && String(t.routeId).startsWith('trolleybus-')));
 const platforms = stops.reduce((n, s) => n + (s.platforms?.length || 0), 0);
 const dedupedPlatformCount = stops.reduce((sum, stop) => {
-  const groups = [];
+  const merged = [];
   for (const point of stop.platforms || []) {
-    const hits = groups.filter((group) => group.some((p) => platformDistance(p, point) <= 12));
-    hits.forEach((hit) => groups.splice(groups.indexOf(hit), 1));
-    groups.push([point, ...hits.flat()]);
+    const candidate = { lat: point[0], lng: point[1], modes: point[2] || 0 };
+    const hit = merged.find((item) => {
+      const a = [(item.lat), (item.lng)];
+      const b = [candidate.lat, candidate.lng];
+      return platformDistance(a, b) <= 12;
+    });
+    if (!hit) {
+      merged.push({ ...candidate, count: 1 });
+      continue;
+    }
+    hit.count += 1;
+    hit.lat += (candidate.lat - hit.lat) / hit.count;
+    hit.lng += (candidate.lng - hit.lng) / hit.count;
+    hit.modes |= candidate.modes;
   }
-  return sum + groups.length;
+  return sum + merged.length;
 }, 0);
-const multiPlatformStops = stops.map((s) => ({ stop: s, clusters: platformClusters(s.platforms || []) }))
-  .filter((item) => item.clusters.length > 1);
-const pointsDroppedByOldResolver = multiPlatformStops.reduce((sum, item) => {
-  const kept = Math.max(...item.clusters.map((cluster) => cluster.length));
-  return sum + item.stop.platforms.length - kept;
-}, 0);
-const noPlatformPoints = stops.filter((s) => !(s.platforms || []).length && (!Number.isFinite(s.lat) || !Number.isFinite(s.lng)));
 const duplicates = [...duplicateNames.entries()].filter(([, arr]) => arr.length > 1);
 
 console.log('=== MATBUS · АУДИТ ДАННЫХ ВИТЕБСКА ===');
