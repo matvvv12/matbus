@@ -46,17 +46,14 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   const { colors, palette } = useTheme();
   const sides = stop.platforms.length > 1 ? platformHeadsigns(data, stop.id) : [];
   const hasSides = sides.some((x) => x && x.length);
-  // У одиночной платформы нет выбора стороны. Для неоднозначных записей расписания
-  // сохраняем показ на остановке, чтобы транспорт не пропадал из-за пробела в данных.
-  const activePlatform = stop.platforms.length > 1 ? platformIdx : undefined;
   const kinds = (pi: number) => {
     const m = stop.platforms[pi]?.modes;
     const t = m ? typesOfMask(m).filter((x) => stop.types.includes(x)) : [];
     return t.length && t.length < 3 && stop.types.length > 1 ? t.map((x) => TRANSPORT_META[x].title).join('/') : '';
   };
   const routesHere = useMemo(
-    () => routesAtStop(data, stop.id, activePlatform),
-    [data, stop.id, activePlatform]
+    () => routesAtStop(data, stop.id),
+    [data, stop.id]
   );
   const [transportGroup, setTransportGroup] = useState<'city' | 'minibus'>('city');
   const [activeType, setActiveType] = useState<TransportType | 'all'>('all');
@@ -77,16 +74,16 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   const activeRoutes = groupRoutes.filter((route) => activeType === 'all' || route.type === activeType);
   const activeRoute = groupRoutes.find((route) => route.id === activeRouteId) ?? null;
   const selectedSchedule = useMemo(
-    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate, activePlatform) : [],
-    [data, stop.id, activeRouteId, activePlatform, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
+    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate) : [],
+    [data, stop.id, activeRouteId, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
   );
   const selectedScheduleCount = selectedSchedule.reduce((sum, group) => sum + group.times.length, 0);
   const hasRouteTimetable = activeRouteId != null && (data.byStop.get(stop.id) ?? []).some((entry) => entry.routeId === activeRouteId);
   // Сначала фильтруем по выбранной платформе и группе транспорта; неподтверждённая
   // привязка остаётся видимой, чтобы не терять рейсы.
-  const nearestDepartures = nextDepartures(data, stop.id, now, 12, activePlatform, groupTypes);
+  const nearestDepartures = nextDepartures(data, stop.id, now, 12, undefined, groupTypes);
   // Берём ближайший рейс каждого вида внутри выбранной вкладки.
-  const nearestByType = nextDepartureByType(data, stop.id, now, activePlatform)
+  const nearestByType = nextDepartureByType(data, stop.id, now)
     .filter((departure) => groupTypes.includes(departure.route.type));
   const selectedDateIsToday = dateOffset === 0;
   const todayMin = minutesOfDay(now);
@@ -223,7 +220,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
         )}
         <View style={{ marginTop: 13, gap: 9 }}>
           <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайшие отправления</Text>
-          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Показаны маршруты и отправления выбранной стороны остановки.</Text>
+          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Учитываются обе стороны остановки — ни один вид транспорта не скрывается из-за выбранной платформы.</Text>
           {nearestByType.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
               {nearestByType.map((d) => (
