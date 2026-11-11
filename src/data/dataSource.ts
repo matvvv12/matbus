@@ -4,15 +4,24 @@ import { MODE_BIT, TransportType } from '../models/transport';
 import { lastPart, normTitle } from '../services/schedule';
 
 const ALL_DAYS: DayType[] = ['weekday', 'saturday', 'sunday'];
+const TRANSPORT_TYPES: readonly TransportType[] = ['bus', 'trolleybus', 'tram', 'minibus'];
+
+/** IDs in imported feeds may arrive as numbers or strings; all app indexes use strings. */
+const normalizeId = (value: unknown): string => String(value ?? '').trim();
+const isTransportType = (value: unknown): value is TransportType =>
+  TRANSPORT_TYPES.includes(value as TransportType);
 const TRAVEL_MIN_BETWEEN_STOPS = 3;
 let cache: TransitData | null = null;
 
 function indexByStop(entries: TimetableEntry[]) {
   const m = new Map<string, TimetableEntry[]>();
-  entries.forEach((e) => {
-    const a = m.get(e.stopId);
-    if (a) a.push(e);
-    else m.set(e.stopId, [e]);
+  entries.forEach((entry) => {
+    const stopId = normalizeId(entry.stopId);
+    if (!stopId) return;
+    const normalized = stopId === entry.stopId ? entry : { ...entry, stopId };
+    const list = m.get(stopId);
+    if (list) list.push(normalized);
+    else m.set(stopId, [normalized]);
   });
   return m;
 }
@@ -227,13 +236,13 @@ function buildReal(raw: any): TransitData | null {
   if (!stopsRaw.length) return null;
 
   const stops: Stop[] = stopsRaw.map((s) => ({
-    id: String(s.id), name: s.name, address: '',
+    id: normalizeId(s.id), name: String(s.name ?? '').trim(), address: '',
     latitude: typeof s.lat === 'number' ? s.lat : null,
     longitude: typeof s.lng === 'number' ? s.lng : null,
     platforms: dedupePlatformPoints(Array.isArray(s.platforms)
       ? s.platforms.map((p: number[]) => ({ latitude: p[0], longitude: p[1], modes: p[2] || 0 }))
       : typeof s.lat === 'number' ? [{ latitude: s.lat, longitude: s.lng }] : []),
-    types: s.types ?? [], isDemo: false,
+    types: Array.isArray(s.types) ? s.types.filter(isTransportType) : [], isDemo: false,
   }));
   // Не теряем остановку из-за отсутствующих верхнеуровневых lat/lng,
   // если в исходном JSON есть координаты хотя бы одной платформы.
@@ -247,22 +256,32 @@ function buildReal(raw: any): TransitData | null {
   const stopIds = new Set(stops.map((s) => s.id));
 
   const routes = new Map<string, TransportRoute>();
-  (raw.routes ?? []).forEach((r: any) =>
-    routes.set(r.id, {
-      id: r.id, number: r.number, type: r.type, isDemo: false,
-      directions: (r.directions ?? []).map((d: any) => ({ title: d.title, stopIds: d.stopIds ?? [] })),
-    })
-  );
+  (raw.routes ?? []).forEach((r: any) => {
+    const routeId = normalizeId(r.id);
+    if (!routeId || !isTransportType(r.type)) return;
+    routes.set(routeId, {
+      id: routeId, number: String(r.number ?? '').trim(), type: r.type, isDemo: false,
+      directions: (Array.isArray(r.directions) ? r.directions : []).map((d: any) => ({
+        title: String(d.title ?? '').trim(),
+        stopIds: (Array.isArray(d.stopIds) ? d.stopIds : []).map(normalizeId).filter(Boolean),
+      })),
+    });
+  });
 
   // Не полагаемся только на сохранённый список типов остановки: сверяем его с реальными
   // последовательностями маршрутов, чтобы вид транспорта не пропадал из фильтров.
   const typesAtStop = new Map<string, Set<TransportType>>();
-  routes.forEach((route) => route.directions.forEach((direction) => direction.stopIds.forEach((id) => {
+  routes.forEach((route) => route.directions.forEach((direction) => direction.stopIds.forEach((rawId) => {
+    const id = normalizeId(rawId);
+    if (!id) return;
     if (!typesAtStop.has(id)) typesAtStop.set(id, new Set());
     typesAtStop.get(id)!.add(route.type);
   })));
   stops.forEach((stop) => {
-    stop.types = Array.from(new Set([...(stop.types ?? []), ...(typesAtStop.get(stop.id) ?? [])]));
+    stop.types = Array.from(new Set([
+      ...(Array.isArray(stop.types) ? stop.types.filter(isTransportType) : []),
+      ...(typesAtStop.get(normalizeId(stop.id)) ?? []),
+    ]));
   });
 
   const stopByIdTmp = new Map(stops.map((x) => [x.id, x]));
@@ -283,13 +302,16 @@ function buildReal(raw: any): TransitData | null {
   const timetables: TimetableEntry[] = [];
   const rawTimetableGroups = new Map<string, any[]>();
   (raw.timetables ?? []).forEach((t: any) => {
-    const stopId = String(t.stopId);
-    if (!stopIds.has(stopId) || !Array.isArray(t.times) || !t.times.length) return;
-    if (!routes.has(t.routeId)) {
-      const [type, ...rest] = String(t.routeId).split('-');
-      routes.set(t.routeId, { id: t.routeId, number: rest.join('-'), type: type as TransportType, isDemo: false, directions: [] });
+    const stopId = normalizeId(t.stopId);
+    const routeId = normalizeId(t.routeId);
+    if (!stopIds.has(stopId) || !routeId || !Array.isArray(t.times) || !t.times.length) return;
+    if (!ALL_DAYS.includes(t.day)) return;
+    if (!routes.has(routeId)) {
+      const [type, ...rest] = routeId.split('-');
+      if (!isTransportType(type)) return;
+      routes.set(routeId, { id: routeId, number: rest.join('-'), type, isDemo: false, directions: [] });
     }
-    const key = `${stopId}|${t.routeId}|${t.day}`;
+    const key = `${stopId}|${routeId}|${t.day}`;
     const group = rawTimetableGroups.get(key);
     if (group) group.push(t);
     else rawTimetableGroups.set(key, [t]);
@@ -298,7 +320,7 @@ function buildReal(raw: any): TransitData | null {
   rawTimetableGroups.forEach((group) => {
     const first = group[0];
     const stopId = String(first.stopId);
-    const routeId = String(first.routeId);
+    const routeId = normalizeId(first.routeId);
     const route = routes.get(routeId);
     const matchingDirections = (route?.directions ?? []).filter((direction) => direction.stopIds.includes(stopId));
 
@@ -325,7 +347,7 @@ function buildReal(raw: any): TransitData | null {
         headsign: title === 'Направление не указано в источнике'
           ? title
           : (title.split(' - ').pop()?.trim() || title),
-        day: t.day, times, estimated: Boolean(t.estimated),
+        day: t.day as DayType, times, estimated: Boolean(t.estimated),
       });
     });
   });
