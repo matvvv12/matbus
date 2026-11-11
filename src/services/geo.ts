@@ -11,10 +11,12 @@ export function distanceMeters(a: LatLng, b: LatLng): number {
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
+export type StopPlatformPoint = LatLng & { modes?: number };
+
 export type StopPlatformSource = {
   latitude: number | null;
   longitude: number | null;
-  platforms: LatLng[];
+  platforms: StopPlatformPoint[];
 };
 
 /**
@@ -24,7 +26,7 @@ export type StopPlatformSource = {
 export function localPlatformEntries(
   stop: StopPlatformSource,
   maxDistanceMeters = 250,
-): { point: LatLng; index: number }[] {
+): { point: StopPlatformPoint; index: number }[] {
   const all = stop.platforms.map((point, index) => ({ point, index }));
   if (stop.latitude == null || stop.longitude == null) return all;
   const centre = { latitude: stop.latitude, longitude: stop.longitude };
