@@ -408,10 +408,15 @@ export default function MapScreen({
             stop={selected}
             data={data}
             now={now}
-            isFavorite={isFavorite(selected.id)}
+            isFavorite={[selected.id, ...(selected.aliases ?? [])].some(isFavorite)}
             platformIdx={selectedPi}
             onSelectPlatform={(pi) => { setSelectedPi(pi); focusPlatform(selected, pi); }}
-            onToggleFavorite={() => toggle(selected.id)}
+            onToggleFavorite={() => {
+              const ids = [selected.id, ...(selected.aliases ?? [])];
+              const savedIds = ids.filter(isFavorite);
+              if (savedIds.length) savedIds.forEach(toggle);
+              else toggle(selected.id);
+            }}
             onClose={() => setSelectedId(null)}
             onOpenRoute={openRoutePreview}
           />
