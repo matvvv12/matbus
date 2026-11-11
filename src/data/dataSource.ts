@@ -286,6 +286,7 @@ function mergeDuplicateStops(sourceStops: Stop[]): {
     if (group.length === 1) return { ...primary };
     const platforms = dedupePlatformPoints(group.flatMap((stop) => stop.platforms));
     const types = Array.from(new Set(group.flatMap((stop) => stop.types)));
+  const aliases = group.map((stop) => normalizeId(stop.id)).filter((id) => id && id !== primary.id);
     const bestCoordinates = platforms.length ? centroid(platforms) : {
       latitude: primary.latitude as number, longitude: primary.longitude as number,
     };
