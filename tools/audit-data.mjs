@@ -19,8 +19,8 @@ const bySourceId = new Map();
 const routeById = new Map();
 const normalizeId = (value) => String(value ?? '').trim();
 const normalizeName = (value) => String(value ?? '').toLowerCase().replace(/ё/g, 'е')
-  .replace(/^\\s*(?:ул\\.?|улица)\\s+/u, '')
-  .replace(/[^a-zа-я0-9]+/gu, ' ').trim().replace(/\\s+/g, ' ');
+  .replace(/^\s*(?:ул\.?|улица)\s+/u, '')
+  .replace(/[^a-zа-я0-9]+/gu, ' ').trim().replace(/\s+/g, ' ');
 
 const distance = (a, b) => {
   const lat = (a.latitude + b.latitude) / 2;
@@ -196,7 +196,7 @@ const report = [
   '',
   'НЕКОРРЕКТНЫЕ КООРДИНАТЫ:',
   ...(invalidCoordinates.length ? invalidCoordinates : ['нет']),
-].join('\\n');
+].join('\n');
 
 console.log(report);
 fs.writeFileSync(path.resolve('tools/audit-data-report.txt'), report, 'utf8');
