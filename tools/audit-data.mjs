@@ -13,19 +13,24 @@ const routes = Array.isArray(data.routes) ? data.routes : [];
 const timetables = Array.isArray(data.timetables) ? data.timetables : [];
 const rawPlatformCount = stops.reduce((sum, stop) => sum + (stop.platforms || []).length, 0);
 const dedupedPlatformCount = stops.reduce((sum, stop) => {
-  const groups = [];
+  const merged = [];
   for (const point of stop.platforms || []) {
-    const lat = point[0];
-    const lng = point[1];
+    const candidate = { latitude: point[0], longitude: point[1], modes: point[2] || 0 };
     const distance = (a, b) => Math.hypot(
-      (a[0] - b[0]) * 110540,
-      (a[1] - b[1]) * 111320 * Math.cos(a[0] * Math.PI / 180)
+      (a.latitude - b.latitude) * 110540,
+      (a.longitude - b.longitude) * 111320 * Math.cos(a.latitude * Math.PI / 180)
     );
-    const hits = groups.filter((group) => group.some((p) => distance(p, point) <= 12));
-    hits.forEach((hit) => groups.splice(groups.indexOf(hit), 1));
-    groups.push([point, ...hits.flat()]);
+    const hit = merged.find((item) => distance(item, candidate) <= 12);
+    if (!hit) {
+      merged.push({ ...candidate, count: 1 });
+      continue;
+    }
+    hit.count += 1;
+    hit.latitude += (candidate.latitude - hit.latitude) / hit.count;
+    hit.longitude += (candidate.longitude - hit.longitude) / hit.count;
+    hit.modes |= candidate.modes;
   }
-  return sum + groups.length;
+  return sum + merged.length;
 }, 0);
 const stopIds = new Set();
 const routeIds = new Set();
