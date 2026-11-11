@@ -16,6 +16,8 @@ export type Stop = {
   /** Физические платформы (обе стороны дороги) */
   platforms: { latitude: number; longitude: number; modes?: number }[];
   types: TransportType[];
+  /** Original feed IDs merged into this physical stop; retained for saved places and lookups. */
+  aliases?: string[];
   isDemo: boolean;
 };
 
