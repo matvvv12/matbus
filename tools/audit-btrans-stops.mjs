@@ -29,7 +29,7 @@ function normalizeName(value) {
     .replace(/\bпр\.?\s+(?=[а-я])/g, 'проспект ')
     .replace(/\bул\.?\s*/g, 'улица ')
     .replace(/\bмкр\.?\s*/g, 'микрорайон ');
-  return s.replace(/[^a-zа-я0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return s.replace(/^\s*улица\s+/u, '').replace(/[^a-zа-я0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
 function normRoute(value) { return decode(value).replace(/[\s()]/g, '').toUpperCase(); }
 
