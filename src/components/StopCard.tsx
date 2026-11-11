@@ -213,6 +213,14 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
           })}
         </View>
 
+        {transportGroup === 'minibus' && (
+          <View style={{ marginTop: 11, paddingHorizontal: 11, paddingVertical: 9, borderRadius: 13,
+            backgroundColor: withAlpha('#FF9F0A', 0.10), borderWidth: 1, borderColor: withAlpha('#FF9F0A', 0.25) }}>
+            <Text style={{ color: '#FF9F0A', fontSize: 11, fontWeight: '700' }}>
+              Время маршруток пока расчётное, а не GPS-прогноз. Значок ≈ означает ориентировочное время — оно может отличаться от фактического.
+            </Text>
+          </View>
+        )}
         <View style={{ marginTop: 13, gap: 9 }}>
           <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайшие отправления</Text>
           <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Показаны маршруты и отправления выбранной стороны остановки.</Text>
@@ -222,7 +230,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
                 <PressableScale key={d.route.type} onPress={() => onOpenRoute(d.route.id, d.directionIndex >= 0 ? d.directionIndex : 0)} scaleTo={0.96}>
                   <View style={{ minWidth: 116, borderRadius: 16, padding: 10, backgroundColor: withAlpha(TRANSPORT_META[d.route.type].color, 0.12), borderWidth: 1, borderColor: withAlpha(TRANSPORT_META[d.route.type].color, 0.38) }}>
                     <RouteBadge number={d.route.number} type={d.route.type} />
-                    <Text style={{ color: colors.text, fontWeight: '800', fontSize: 13, marginTop: 8 }}>{d.inMin <= 0 ? 'Сейчас' : `Через ${d.inMin} мин`}</Text>
+                    <Text style={{ color: colors.text, fontWeight: '800', fontSize: 13, marginTop: 8 }}>{d.estimated ? '≈ ' : ''}{d.inMin <= 0 ? 'сейчас' : `через ${d.inMin} мин`}</Text>
                     <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 2 }}>{formatTime(d.timeMin)}{d.estimated ? ' ≈' : ''}</Text>
                     <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 3 }} numberOfLines={1}>{d.headsign}</Text>
                   </View>
@@ -243,7 +251,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
                   <Text style={{ color: colors.text, fontSize: 13, flex: 1, marginLeft: 9 }} numberOfLines={1}>→ {d.headsign}</Text>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={{ color: palette.accent, fontSize: 14, fontWeight: '800' }}>
-                      {d.inMin <= 0 ? 'сейчас' : `${d.inMin} мин`}
+                      {d.estimated ? '≈ ' : ''}{d.inMin <= 0 ? 'сейчас' : `${d.inMin} мин`}
                     </Text>
                     <Text style={{ color: colors.subtext, fontSize: 11 }}>{formatTime(d.timeMin)}{d.estimated ? ' ≈' : ''}</Text>
                   </View>
