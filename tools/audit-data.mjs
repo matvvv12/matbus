@@ -11,6 +11,22 @@ const data = JSON.parse(fs.readFileSync(file, 'utf8'));
 const stops = Array.isArray(data.stops) ? data.stops : [];
 const routes = Array.isArray(data.routes) ? data.routes : [];
 const timetables = Array.isArray(data.timetables) ? data.timetables : [];
+const rawPlatformCount = stops.reduce((sum, stop) => sum + (stop.platforms || []).length, 0);
+const dedupedPlatformCount = stops.reduce((sum, stop) => {
+  const groups = [];
+  for (const point of stop.platforms || []) {
+    const lat = point[0];
+    const lng = point[1];
+    const distance = (a, b) => Math.hypot(
+      (a[0] - b[0]) * 110540,
+      (a[1] - b[1]) * 111320 * Math.cos(a[0] * Math.PI / 180)
+    );
+    const hits = groups.filter((group) => group.some((p) => distance(p, point) <= 12));
+    hits.forEach((hit) => groups.splice(groups.indexOf(hit), 1));
+    groups.push([point, ...hits.flat()]);
+  }
+  return sum + groups.length;
+}, 0);
 const stopIds = new Set();
 const routeIds = new Set();
 const errors = [];
@@ -76,6 +92,7 @@ console.log(`Снимок данных: ${data.meta?.fetchedAt || 'не указ
 console.log(`Остановок: ${stops.length} (${stops.length - missingCoords.length} с координатами, ${missingCoords.length} без координат)`);
 console.log(`Маршрутов: ${routes.length} (${Object.entries(routeTypeCounts).map(([type, count]) => `${count} ${modeLabels[type] || type}`).join(', ')})`);
 console.log(`Записей расписания: ${timetables.length}`);
+console.log(`Точек платформ: ${rawPlatformCount}; после объединения дублей в радиусе 12 м: ${dedupedPlatformCount}`);
 console.log(`Типы, отмеченные в остановках: ${Array.from(stopTypes, ([type, count]) => `${type}: ${count}`).join(', ')}`);
 if (missingCoords.length) {
   console.log('\nОстановки без проверенных координат (остаются в поиске и расписании):');
