@@ -96,6 +96,32 @@ function resolvePlatforms(stops: Stop[], routes: TransportRoute[], stopById: Map
   });
 }
 
+/** Выбирает группу платформ, ближайшую к соседним остановкам этого направления. */
+function clusterForDirection(s: Stop, prev?: Stop, next?: Stop): P[] {
+  const clusters = clusterPlatforms(s.platforms);
+  if (clusters.length <= 1) return clusters[0] ?? [];
+  const refs = [prev, next].filter((x): x is Stop => !!x && x.latitude != null && x.longitude != null);
+  if (!refs.length) {
+    return clusters.reduce((best, cluster) => {
+      const center = centroid(cluster);
+      const bestCenter = centroid(best);
+      return distM(center, { latitude: s.latitude as number, longitude: s.longitude as number }) <
+        distM(bestCenter, { latitude: s.latitude as number, longitude: s.longitude as number }) ? cluster : best;
+    }, clusters[0]);
+  }
+  return clusters.reduce((best, cluster) => {
+    const center = centroid(cluster);
+    const bestCenter = centroid(best);
+    const score = refs.reduce((sum, ref) => sum + distM(center, {
+      latitude: ref.latitude as number, longitude: ref.longitude as number,
+    }), 0) / refs.length;
+    const bestScore = refs.reduce((sum, ref) => sum + distM(bestCenter, {
+      latitude: ref.latitude as number, longitude: ref.longitude as number,
+    }), 0) / refs.length;
+    return score < bestScore ? cluster : best;
+  }, clusters[0]);
+}
+
 const sideKey = (stopId: string, routeId: string, title: string) => `${stopId}|${routeId}|${normTitle(title)}`;
 const sideKeyLast = (stopId: string, routeId: string, title: string) => `${stopId}|${routeId}|L${lastPart(title)}`;
 
