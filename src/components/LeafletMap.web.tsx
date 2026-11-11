@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { VITEBSK } from '../models/city';
 import { typesOfMask } from '../models/transport';
+import { localPlatformEntries } from '../services/geo';
 import type { MapProps } from './LeafletMap';
 
 const HTML = `<!doctype html><html><head><meta charset="utf-8">
@@ -210,22 +211,13 @@ export default function LeafletMap({ stops, selectedId, selectedPlatform, pin, r
   const markers = useMemo(
     () =>
       stops.flatMap((s) => {
-        const allPoints = s.platforms.length
-          ? s.platforms.map((point) => point)
-          : s.latitude != null ? [{ latitude: s.latitude, longitude: s.longitude as number }] : [];
-        // A stop record can accidentally contain platforms from a different
-        // station (e.g. a bad OSM name match). Keep the original indexes so
-        // selection/schedules remain aligned, but do not draw distant outliers.
-        const localPoints = s.latitude != null && s.longitude != null
-          ? allPoints.map((point, pi) => ({ point, pi })).filter(({ point }) => {
-              const lat = ((s.latitude as number) + point.latitude) / 2;
-              const dx = ((s.latitude as number) - point.latitude) * 110540;
-              const dy = (s.longitude as number - point.longitude) * 111320 * Math.cos(lat * Math.PI / 180);
-              return Math.hypot(dx, dy) <= 250;
-            })
-          : allPoints.map((point, pi) => ({ point, pi }));
-        const visiblePoints = localPoints.length ? localPoints : allPoints.map((point, pi) => ({ point, pi }));
-        return visiblePoints.map(({ point: p, pi }) => {
+        const entries = localPlatformEntries(s);
+        const visiblePoints = entries.length
+          ? entries
+          : s.latitude != null
+            ? [{ point: { latitude: s.latitude, longitude: s.longitude as number }, index: 0 }]
+            : [];
+        return visiblePoints.map(({ point: p, index: pi }) => {
           const own = p.modes ? typesOfMask(p.modes).filter((x) => s.types.includes(x)) : s.types;
           const ty = own.length ? own : s.types;
           return { id: s.id, pi, lat: p.latitude, lng: p.longitude, t: ty.length === 1 ? ty[0] : 'multi' };
