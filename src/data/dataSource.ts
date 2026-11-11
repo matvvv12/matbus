@@ -18,7 +18,7 @@ function indexByStop(entries: TimetableEntry[]) {
 }
 
 
-type P = { latitude: number; longitude: number };
+type P = { latitude: number; longitude: number; modes?: number };
 const M_LAT = 110540;
 const mPerLon = (lat: number) => 111320 * Math.cos((lat * Math.PI) / 180);
 const distM = (a: P, b: P) =>
@@ -27,6 +27,28 @@ const centroid = (c: P[]): P => ({
   latitude: c.reduce((a, p) => a + p.latitude, 0) / c.length,
   longitude: c.reduce((a, p) => a + p.longitude, 0) / c.length,
 });
+
+/**
+ * OSM может описывать один посадочный пункт несколькими близкими объектами
+ * (bus_stop, platform, stop_position). Склеиваем только точки в пределах 12 м,
+ * сохраняя объединённые виды транспорта. Противоположные стороны остаются раздельными.
+ */
+function dedupePlatformPoints(points: P[]): P[] {
+  const merged: (P & { count: number })[] = [];
+  points.forEach((point) => {
+    if (!Number.isFinite(point.latitude) || !Number.isFinite(point.longitude)) return;
+    const hit = merged.find((candidate) => distM(point, candidate) <= 12);
+    if (!hit) {
+      merged.push({ ...point, count: 1 });
+      return;
+    }
+    hit.count += 1;
+    hit.latitude += (point.latitude - hit.latitude) / hit.count;
+    hit.longitude += (point.longitude - hit.longitude) / hit.count;
+    hit.modes = (hit.modes ?? 0) | (point.modes ?? 0);
+  });
+  return merged.map(({ count: _count, ...point }) => point);
+}
 
 function clusterPlatforms(pts: P[]): P[][] {
   // Радиус 150 м объединяет платформы через перекрёстки и соседние остановки.
@@ -182,9 +204,9 @@ function buildReal(raw: any): TransitData | null {
     id: String(s.id), name: s.name, address: '',
     latitude: typeof s.lat === 'number' ? s.lat : null,
     longitude: typeof s.lng === 'number' ? s.lng : null,
-    platforms: Array.isArray(s.platforms)
+    platforms: dedupePlatformPoints(Array.isArray(s.platforms)
       ? s.platforms.map((p: number[]) => ({ latitude: p[0], longitude: p[1], modes: p[2] || 0 }))
-      : typeof s.lat === 'number' ? [{ latitude: s.lat, longitude: s.lng }] : [],
+      : typeof s.lat === 'number' ? [{ latitude: s.lat, longitude: s.lng }] : []),
     types: s.types ?? [], isDemo: false,
   }));
   // Не теряем остановку из-за отсутствующих верхнеуровневых lat/lng,
