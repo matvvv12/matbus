@@ -46,7 +46,8 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   const { colors, palette } = useTheme();
   const sides = stop.platforms.length > 1 ? platformHeadsigns(data, stop.id) : [];
   const hasSides = sides.some((x) => x && x.length);
-  // У одиночной платформы нет выбора стороны: сохраняем общий список маршрутов.
+  // У одиночной платформы нет выбора стороны. Для неоднозначных записей расписания
+  // сохраняем показ на остановке, чтобы транспорт не пропадал из-за пробела в данных.
   const activePlatform = stop.platforms.length > 1 ? platformIdx : undefined;
   const kinds = (pi: number) => {
     const m = stop.platforms[pi]?.modes;
@@ -81,8 +82,8 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   );
   const selectedScheduleCount = selectedSchedule.reduce((sum, group) => sum + group.times.length, 0);
   const hasRouteTimetable = activeRouteId != null && (data.byStop.get(stop.id) ?? []).some((entry) => entry.routeId === activeRouteId);
-  // Ограничение выполняется после фильтра по группе транспорта внутри nextDepartures.
-  // Маршрутки больше не могут занять первые строки и вытеснить городской транспорт.
+  // Сначала фильтруем по выбранной платформе и группе транспорта; неподтверждённая
+  // привязка остаётся видимой, чтобы не терять рейсы.
   const nearestDepartures = nextDepartures(data, stop.id, now, 12, activePlatform, groupTypes);
   // Берём ближайший рейс каждого вида внутри выбранной вкладки.
   const nearestByType = nextDepartureByType(data, stop.id, now, activePlatform)
