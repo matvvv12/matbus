@@ -76,7 +76,8 @@ const routeTypesByStop = new Map();
 const routeIdsByStop = new Map();
 let emptyDirections = 0;
 let unknownRouteStopReferences = 0;
-let adjacentDuplicateStopReferences = 0;
+let rawAdjacentDuplicateStopReferences = 0;
+let aliasAdjacentDuplicateStopReferences = 0;
 
 for (const route of routes) {
   const routeId = normalizeId(route.id);
@@ -86,10 +87,18 @@ for (const route of routes) {
   if (!validTypes.has(route.type)) errors.push(`Неизвестный тип транспорта у маршрута ${route.number}: ${route.type}`);
 
   for (const direction of route.directions || []) {
-    const ids = (direction.stopIds || []).map(canonicalId);
+    const rawIds = direction.stopIds || [];
+    const ids = rawIds.map(canonicalId);
     if (!ids.length) emptyDirections++;
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
+      if (i > 0 && ids[i] === ids[i - 1]) {
+        // Existing repeated IDs are source-data warnings; only a newly collapsed
+        // pair of different source IDs indicates an unsafe alias merge.
+        if (normalizeId(rawIds[i]) === normalizeId(rawIds[i - 1])) rawAdjacentDuplicateStopReferences++;
+        else aliasAdjacentDuplicateStopReferences++;
+        continue;
+      }
       if (!canonicalStopIds.has(id)) {
         errors.push(`Маршрут ${route.number} ссылается на неизвестную остановку ${direction.stopIds[i]}`);
         unknownRouteStopReferences++;
@@ -203,7 +212,7 @@ fs.writeFileSync(path.resolve('tools/audit-data-report.txt'), report, 'utf8');
 
 const failed = errors.length || missingTypes.length || timetableWithoutRoute.length ||
   timetableWithoutStop.length || unknownDays.length || invalidTimes.length ||
-  routeStopWithoutTimetable.length || invalidCoordinates.length || adjacentDuplicateStopReferences;
+  routeStopWithoutTimetable.length || invalidCoordinates.length || aliasAdjacentDuplicateStopReferences;
 if (failed) {
   console.error('Проверка завершена с ошибками. Подробный отчёт: tools/audit-data-report.txt');
   process.exit(1);
