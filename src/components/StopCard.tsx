@@ -52,8 +52,8 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
     return t.length && t.length < 3 && stop.types.length > 1 ? t.map((x) => TRANSPORT_META[x].title).join('/') : '';
   };
   const routesHere = useMemo(
-    () => routesAtStop(data, stop.id),
-    [data, stop.id]
+    () => routesAtStop(data, stop.id, platformIdx),
+    [data, stop.id, platformIdx]
   );
   const [transportGroup, setTransportGroup] = useState<'city' | 'minibus'>('city');
   const [activeType, setActiveType] = useState<TransportType | 'all'>('all');
@@ -74,16 +74,16 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   const activeRoutes = groupRoutes.filter((route) => activeType === 'all' || route.type === activeType);
   const activeRoute = groupRoutes.find((route) => route.id === activeRouteId) ?? null;
   const selectedSchedule = useMemo(
-    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate) : [],
-    [data, stop.id, activeRouteId, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
+    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate, platformIdx) : [],
+    [data, stop.id, activeRouteId, platformIdx, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
   );
   const selectedScheduleCount = selectedSchedule.reduce((sum, group) => sum + group.times.length, 0);
   const hasRouteTimetable = activeRouteId != null && (data.byStop.get(stop.id) ?? []).some((entry) => entry.routeId === activeRouteId);
   // Ограничение выполняется после фильтра по группе транспорта внутри nextDepartures.
   // Маршрутки больше не могут занять первые строки и вытеснить городской транспорт.
-  const nearestDepartures = nextDepartures(data, stop.id, now, 12, undefined, groupTypes);
+  const nearestDepartures = nextDepartures(data, stop.id, now, 12, platformIdx, groupTypes);
   // Берём ближайший рейс каждого вида внутри выбранной вкладки.
-  const nearestByType = nextDepartureByType(data, stop.id, now)
+  const nearestByType = nextDepartureByType(data, stop.id, now, platformIdx)
     .filter((departure) => groupTypes.includes(departure.route.type));
   const selectedDateIsToday = dateOffset === 0;
   const todayMin = minutesOfDay(now);
@@ -212,7 +212,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
 
         <View style={{ marginTop: 13, gap: 9 }}>
           <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайшие отправления</Text>
-          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Учитываются обе стороны остановки — ни один вид транспорта не скрывается из-за выбранной платформы.</Text>
+          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Показаны маршруты и отправления выбранной стороны остановки.</Text>
           {nearestByType.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
               {nearestByType.map((d) => (
