@@ -33,7 +33,12 @@ export default function FavoritesScreen({
   const data = useMemo(() => loadTransitData(), []);
   const [now] = useState(new Date());
 
-  const stops = stopIds.map((id) => data.stopById.get(id)).filter(Boolean) as NonNullable<ReturnType<typeof data.stopById.get>>[];
+  const uniqueStops = new Map<string, NonNullable<ReturnType<typeof data.stopById.get>>>();
+  stopIds.forEach((id) => {
+    const stop = data.stopById.get(id);
+    if (stop) uniqueStops.set(stop.id, stop);
+  });
+  const stops = Array.from(uniqueStops.values());
   const routes = routeIds.map((id) => data.routes.find((r) => r.id === id)).filter(Boolean) as typeof data.routes;
 
   return (
