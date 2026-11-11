@@ -29,7 +29,10 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit --pretty false",
     "build:web": "node node_modules/expo/bin/cli export --platform web",
-    "audit:data": "node tools/audit-data.mjs"
+    "audit:data": "node tools/audit-data.mjs",
+    "audit:btrans": "node tools/audit-btrans-stops.mjs",
+    "data:osm:preview": "node tools/enrich-stop-coordinates.mjs",
+    "data:osm:apply": "node tools/enrich-stop-coordinates.mjs --apply"
   },
   "private": true
 }
