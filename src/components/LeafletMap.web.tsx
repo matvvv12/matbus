@@ -218,8 +218,8 @@ export default function LeafletMap({ stops, selectedId, selectedPlatform, pin, r
         // selection/schedules remain aligned, but do not draw distant outliers.
         const localPoints = s.latitude != null && s.longitude != null
           ? allPoints.map((point, pi) => ({ point, pi })).filter(({ point }) => {
-              const lat = (s.latitude as number + point.latitude) / 2;
-              const dx = (s.latitude as number - point.latitude) * 110540;
+              const lat = ((s.latitude as number) + point.latitude) / 2;
+              const dx = ((s.latitude as number) - point.latitude) * 110540;
               const dy = (s.longitude as number - point.longitude) * 111320 * Math.cos(lat * Math.PI / 180);
               return Math.hypot(dx, dy) <= 250;
             })
