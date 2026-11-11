@@ -116,12 +116,14 @@ const missingTypes = [];
 const invalidCoordinates = [];
 const distantPlatforms = [];
 const duplicateNames = new Map();
-for (const stop of groups.map((group) => group[0])) {
+for (const group of groups) {
+  const stop = group[0];
   const id = normalizeId(stop.id);
   const name = normalizeName(stop.name);
   if (!duplicateNames.has(name)) duplicateNames.set(name, []);
   duplicateNames.get(name).push(stop);
-  const missing = [...(routeTypesByStop.get(id) || [])].filter((type) => !(stop.types || []).includes(type));
+  const mergedTypes = new Set(group.flatMap((item) => Array.isArray(item.types) ? item.types : []));
+  const missing = [...(routeTypesByStop.get(id) || [])].filter((type) => !mergedTypes.has(type));
   if (missing.length) missingTypes.push(`${stop.name} [${id}]: ${missing.join(', ')}`);
   if (stop.lat != null || stop.lng != null) {
     if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)) {
