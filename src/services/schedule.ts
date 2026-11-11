@@ -41,7 +41,7 @@ export function nextDepartures(
   const routeById = new Map(data.routes.map((r) => [r.id, r]));
   const out: Departure[] = [];
   (data.byStop.get(stopId) ?? [])
-    .filter((e) => e.day === day && (platform == null || (e.platform != null && e.platform === platform)))
+    .filter((e) => e.day === day && (platform == null || e.platform == null || e.platform === platform))
     .forEach((e) => {
       const route = routeById.get(e.routeId);
       if (!route || (allowedTypes && !allowedTypes.includes(route.type))) return;
@@ -75,7 +75,7 @@ export function routeScheduleAtStop(
   const groups = new Map<string, StopRouteSchedule>();
   (data.byStop.get(stopId) ?? [])
     .filter((entry) => entry.routeId === routeId && entry.day === day &&
-      (platform == null || (entry.platform != null && entry.platform === platform)))
+      (platform == null || entry.platform == null || entry.platform === platform))
     .forEach((entry) => {
       const title = entry.title || entry.headsign || 'Направление не указано';
       const headsign = entry.headsign || title.split(' - ').pop()?.trim() || title;
@@ -103,11 +103,11 @@ export function routesAtStop(data: TransitData, stopId: string, platform?: numbe
   // Расписание может не содержать строку на отдельной остановке (например, конечную),
   // поэтому список маршрутов строим также по последовательностям остановок.
   (data.byStop.get(stopId) ?? []).forEach((entry) => {
-    if (platform != null && (entry.platform == null || entry.platform !== platform)) return;
+    if (platform != null && entry.platform != null && entry.platform !== platform) return;
     add(entry.routeId);
   });
   data.routes.forEach((route) => {
-    if (platform == null && route.directions.some((direction) => direction.stopIds.includes(stopId))) add(route.id);
+    if (route.directions.some((direction) => direction.stopIds.includes(stopId))) add(route.id);
   });
   return Array.from(seen).map((id) => routeById.get(id)!).sort((a, b) =>
     a.type === b.type ? a.number.localeCompare(b.number, 'ru', { numeric: true }) : a.type.localeCompare(b.type)
