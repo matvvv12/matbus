@@ -233,8 +233,8 @@ function buildDemo(): TransitData {
 
 function normalizeStopNameForMerge(value: unknown): string {
   return String(value ?? '').toLowerCase().replace(/ё/g, 'е')
-    .replace(/^\\s*(?:ул\\.?|улица)\\s+/u, '')
-    .replace(/[^a-zа-я0-9]+/gu, ' ').trim().replace(/\\s+/g, ' ');
+    .replace(/^\s*(?:ул\.?|улица)\s+/u, '')
+    .replace(/[^a-zа-я0-9]+/gu, ' ').trim().replace(/\s+/g, ' ');
 }
 
 function samePlatformFootprint(a: Stop, b: Stop): boolean {
@@ -276,8 +276,8 @@ function mergeDuplicateStops(sourceStops: Stop[]): {
   const stops = groups.map((group) => {
     // Prefer the clearest, least abbreviated display name while preserving its ID.
     const ordered = [...group].sort((a, b) => {
-      const aPenalty = /^\\s*(?:ул\\.?|улица)\\s+/iu.test(a.name) ? 1 : 0;
-      const bPenalty = /^\\s*(?:ул\\.?|улица)\\s+/iu.test(b.name) ? 1 : 0;
+      const aPenalty = /^\s*(?:ул\.?|улица)\s+/iu.test(a.name) ? 1 : 0;
+      const bPenalty = /^\s*(?:ул\.?|улица)\s+/iu.test(b.name) ? 1 : 0;
       return aPenalty - bPenalty || a.name.length - b.name.length || a.id.localeCompare(b.id, 'en', { numeric: true });
     });
     const primary = ordered[0];
