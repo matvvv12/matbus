@@ -105,7 +105,6 @@ for (const route of routes) {
         continue;
       }
       if (i > 0 && ids[i] === ids[i - 1]) {
-        adjacentDuplicateStopReferences++;
         continue;
       }
       if (!routeTypesByStop.has(id)) routeTypesByStop.set(id, new Set());
@@ -201,7 +200,8 @@ const report = [
   `некорректные дни недели: ${unknownDays.length}`,
   `некорректные времена: ${invalidTimes.length}`,
   `пустые направления маршрутов: ${emptyDirections}`,
-  `соседние повторяющиеся ID после объединения: ${adjacentDuplicateStopReferences}`,
+  `соседние повторы уже в исходном источнике (предупреждение): ${rawAdjacentDuplicateStopReferences}`,
+  `соседние повторы, появившиеся из-за объединения разных ID (ошибка): ${aliasAdjacentDuplicateStopReferences}`,
   '',
   'НЕКОРРЕКТНЫЕ КООРДИНАТЫ:',
   ...(invalidCoordinates.length ? invalidCoordinates : ['нет']),
