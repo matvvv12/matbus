@@ -46,14 +46,17 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   const { colors, palette } = useTheme();
   const sides = stop.platforms.length > 1 ? platformHeadsigns(data, stop.id) : [];
   const hasSides = sides.some((x) => x && x.length);
+  // У одиночной платформы нет выбора стороны. Для неоднозначных записей расписания
+  // сохраняем показ на остановке, чтобы транспорт не пропадал из-за пробела в данных.
+  const activePlatform = stop.platforms.length > 1 ? platformIdx : undefined;
   const kinds = (pi: number) => {
     const m = stop.platforms[pi]?.modes;
     const t = m ? typesOfMask(m).filter((x) => stop.types.includes(x)) : [];
     return t.length && t.length < 3 && stop.types.length > 1 ? t.map((x) => TRANSPORT_META[x].title).join('/') : '';
   };
   const routesHere = useMemo(
-    () => routesAtStop(data, stop.id),
-    [data, stop.id]
+    () => routesAtStop(data, stop.id, activePlatform),
+    [data, stop.id, activePlatform]
   );
   const [transportGroup, setTransportGroup] = useState<'city' | 'minibus'>('city');
   const [activeType, setActiveType] = useState<TransportType | 'all'>('all');
@@ -74,16 +77,16 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
   const activeRoutes = groupRoutes.filter((route) => activeType === 'all' || route.type === activeType);
   const activeRoute = groupRoutes.find((route) => route.id === activeRouteId) ?? null;
   const selectedSchedule = useMemo(
-    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate) : [],
-    [data, stop.id, activeRouteId, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
+    () => activeRouteId ? routeScheduleAtStop(data, stop.id, activeRouteId, selectedDate, activePlatform) : [],
+    [data, stop.id, activeRouteId, activePlatform, selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()]
   );
   const selectedScheduleCount = selectedSchedule.reduce((sum, group) => sum + group.times.length, 0);
   const hasRouteTimetable = activeRouteId != null && (data.byStop.get(stop.id) ?? []).some((entry) => entry.routeId === activeRouteId);
-  // Ограничение выполняется после фильтра по группе транспорта внутри nextDepartures.
-  // Маршрутки больше не могут занять первые строки и вытеснить городской транспорт.
-  const nearestDepartures = nextDepartures(data, stop.id, now, 12, undefined, groupTypes);
+  // Сначала фильтруем по выбранной платформе и группе транспорта; неподтверждённая
+  // привязка остаётся видимой, чтобы не терять рейсы.
+  const nearestDepartures = nextDepartures(data, stop.id, now, 12, activePlatform, groupTypes);
   // Берём ближайший рейс каждого вида внутри выбранной вкладки.
-  const nearestByType = nextDepartureByType(data, stop.id, now)
+  const nearestByType = nextDepartureByType(data, stop.id, now, activePlatform)
     .filter((departure) => groupTypes.includes(departure.route.type));
   const selectedDateIsToday = dateOffset === 0;
   const todayMin = minutesOfDay(now);
@@ -210,16 +213,24 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
           })}
         </View>
 
+        {transportGroup === 'minibus' && (
+          <View style={{ marginTop: 11, paddingHorizontal: 11, paddingVertical: 9, borderRadius: 13,
+            backgroundColor: withAlpha('#FF9F0A', 0.10), borderWidth: 1, borderColor: withAlpha('#FF9F0A', 0.25) }}>
+            <Text style={{ color: '#FF9F0A', fontSize: 11, fontWeight: '700' }}>
+              Время маршруток пока расчётное, а не GPS-прогноз. Значок ≈ означает ориентировочное время — оно может отличаться от фактического.
+            </Text>
+          </View>
+        )}
         <View style={{ marginTop: 13, gap: 9 }}>
           <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800' }}>Ближайшие отправления</Text>
-          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Учитываются обе стороны остановки — ни один вид транспорта не скрывается из-за выбранной платформы.</Text>
+          <Text style={{ color: colors.subtext, fontSize: 10, marginTop: -5 }}>Показаны маршруты и отправления выбранной стороны остановки.</Text>
           {nearestByType.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
               {nearestByType.map((d) => (
                 <PressableScale key={d.route.type} onPress={() => onOpenRoute(d.route.id, d.directionIndex >= 0 ? d.directionIndex : 0)} scaleTo={0.96}>
                   <View style={{ minWidth: 116, borderRadius: 16, padding: 10, backgroundColor: withAlpha(TRANSPORT_META[d.route.type].color, 0.12), borderWidth: 1, borderColor: withAlpha(TRANSPORT_META[d.route.type].color, 0.38) }}>
                     <RouteBadge number={d.route.number} type={d.route.type} />
-                    <Text style={{ color: colors.text, fontWeight: '800', fontSize: 13, marginTop: 8 }}>{d.inMin <= 0 ? 'Сейчас' : `Через ${d.inMin} мин`}</Text>
+                    <Text style={{ color: colors.text, fontWeight: '800', fontSize: 13, marginTop: 8 }}>{d.estimated ? '≈ ' : ''}{d.inMin <= 0 ? 'сейчас' : `через ${d.inMin} мин`}</Text>
                     <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 2 }}>{formatTime(d.timeMin)}{d.estimated ? ' ≈' : ''}</Text>
                     <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 3 }} numberOfLines={1}>{d.headsign}</Text>
                   </View>
@@ -240,7 +251,7 @@ export function StopCard({ stop, data, now, platformIdx, onSelectPlatform, isFav
                   <Text style={{ color: colors.text, fontSize: 13, flex: 1, marginLeft: 9 }} numberOfLines={1}>→ {d.headsign}</Text>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={{ color: palette.accent, fontSize: 14, fontWeight: '800' }}>
-                      {d.inMin <= 0 ? 'сейчас' : `${d.inMin} мин`}
+                      {d.estimated ? '≈ ' : ''}{d.inMin <= 0 ? 'сейчас' : `${d.inMin} мин`}
                     </Text>
                     <Text style={{ color: colors.subtext, fontSize: 11 }}>{formatTime(d.timeMin)}{d.estimated ? ' ≈' : ''}</Text>
                   </View>

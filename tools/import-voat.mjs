@@ -265,7 +265,7 @@ function platformDistanceM(a, b) {
 }
 
 function mergePlatform(target, point) {
-  const hit = target.find((p) => platformDistanceM(p, point) <= 7);
+  const hit = target.find((p) => platformDistanceM(p, point) <= 12);
   if (hit) hit[2] = (hit[2] || 0) | (point[2] || 0);
   else target.push([+point[0].toFixed(6), +point[1].toFixed(6), point[2] || 0]);
 }

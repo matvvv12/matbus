@@ -67,6 +67,15 @@ const timetableWithoutStop = timetable.filter((t) => !byId.has(String(t.stopId))
 const trolleyStops = stops.filter((s) => (routeStops.get(`${s.id}|trolleybus`) || 0) > 0);
 const trolleyWithoutTimes = trolleyStops.filter((s) => !timetable.some((t) => String(t.stopId) === String(s.id) && String(t.routeId).startsWith('trolleybus-')));
 const platforms = stops.reduce((n, s) => n + (s.platforms?.length || 0), 0);
+const dedupedPlatformCount = stops.reduce((sum, stop) => {
+  const groups = [];
+  for (const point of stop.platforms || []) {
+    const hits = groups.filter((group) => group.some((p) => platformDistance(p, point) <= 12));
+    hits.forEach((hit) => groups.splice(groups.indexOf(hit), 1));
+    groups.push([point, ...hits.flat()]);
+  }
+  return sum + groups.length;
+}, 0);
 const multiPlatformStops = stops.map((s) => ({ stop: s, clusters: platformClusters(s.platforms || []) }))
   .filter((item) => item.clusters.length > 1);
 const pointsDroppedByOldResolver = multiPlatformStops.reduce((sum, item) => {
@@ -81,6 +90,7 @@ console.log(`Остановок: ${stops.length}`);
 console.log(`Маршрутов: ${routes.length}`);
 console.log(`Записей расписания: ${timetable.length}`);
 console.log(`Платформ (точек): ${platforms}`);
+console.log(`После удаления дублей в радиусе 12 м: ${dedupedPlatformCount}`);
 console.log(`Остановок с несколькими удалёнными группами платформ: ${multiPlatformStops.length}`);
 console.log(`Платформ терял старый алгоритм: ${pointsDroppedByOldResolver}`);
 console.log(`Остановок с координатами: ${stops.length - missingCoords.length}/${stops.length}`);
@@ -97,6 +107,7 @@ const report = [
   `Остановок: ${stops.length}`,
   `Маршрутов: ${routes.length}`,
   `Платформ: ${platforms}`,
+  `После удаления близких дублей (12 м): ${dedupedPlatformCount}`,
   `Остановок с несколькими удалёнными группами платформ: ${multiPlatformStops.length}`,
   `Платформ терял старый алгоритм: ${pointsDroppedByOldResolver}`,
   '', 'ОСТАНОВКИ С НЕСКОЛЬКИМИ ГРУППАМИ ПЛАТФОРМ:', ...multiPlatformStops.map(({ stop, clusters }) => `${stop.name} [${stop.id}]: ${stop.platforms.length} точек / ${clusters.length} групп`),
