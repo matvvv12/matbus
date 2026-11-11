@@ -104,9 +104,6 @@ for (const route of routes) {
         unknownRouteStopReferences++;
         continue;
       }
-      if (i > 0 && ids[i] === ids[i - 1]) {
-        continue;
-      }
       if (!routeTypesByStop.has(id)) routeTypesByStop.set(id, new Set());
       routeTypesByStop.get(id).add(route.type);
       if (!routeIdsByStop.has(id)) routeIdsByStop.set(id, new Set());
@@ -117,6 +114,7 @@ for (const route of routes) {
 
 const missingTypes = [];
 const invalidCoordinates = [];
+const distantPlatforms = [];
 const duplicateNames = new Map();
 for (const stop of groups.map((group) => group[0])) {
   const id = normalizeId(stop.id);
@@ -131,6 +129,16 @@ for (const stop of groups.map((group) => group[0])) {
     } else if (stop.lat < 54 || stop.lat > 56 || stop.lng < 29 || stop.lng > 31) {
       invalidCoordinates.push(`${stop.name} [${id}]: координаты вне Витебска (${stop.lat}, ${stop.lng})`);
     }
+  }
+  if (Number.isFinite(stop.lat) && Number.isFinite(stop.lng)) {
+    (stop.platforms || []).forEach((point, index) => {
+      if (!Array.isArray(point) || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+      const metres = distance(
+        { latitude: stop.lat, longitude: stop.lng },
+        { latitude: point[0], longitude: point[1] },
+      );
+      if (metres > 250) distantPlatforms.push(`${stop.name} [${id}], платформа ${index}: ${Math.round(metres)} м от центра`);
+    });
   }
 }
 const ambiguousSameName = [...duplicateNames.entries()]
@@ -205,6 +213,9 @@ const report = [
   '',
   'НЕКОРРЕКТНЫЕ КООРДИНАТЫ:',
   ...(invalidCoordinates.length ? invalidCoordinates : ['нет']),
+  '',
+  'ПЛАТФОРМЫ ДАЛЬШЕ 250 М ОТ ЦЕНТРА ОСТАНОВКИ (ПРОВЕРИТЬ ИСТОЧНИК):',
+  ...(distantPlatforms.length ? distantPlatforms : ['нет']),
 ].join('\n');
 
 console.log(report);
