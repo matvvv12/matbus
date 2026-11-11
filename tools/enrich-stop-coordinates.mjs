@@ -96,7 +96,7 @@ function toFeature(element) {
   const lng = Number(element.lon ?? element.center?.lon);
   if (!tags.name || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
   let modes = 0;
-  if (tags.bus === 'yes' || tags.highway === 'bus_stop' || tags.public_transport === 'platform') modes |= 1;
+  if (tags.bus === 'yes' || tags.highway === 'bus_stop') modes |= 1;
   if (tags.trolleybus === 'yes') modes |= 2;
   if (tags.tram === 'yes') modes |= 4;
   return { name: String(tags.name), key: normalizeName(tags.name), lat, lng, modes };
