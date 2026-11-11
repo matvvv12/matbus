@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { VITEBSK } from '../models/city';
 import { typesOfMask } from '../models/transport';
+import { localPlatformEntries } from '../services/geo';
 import type { MapProps } from './LeafletMap';
 
 const HTML = `<!doctype html><html><head><meta charset="utf-8">
@@ -210,10 +211,13 @@ export default function LeafletMap({ stops, selectedId, selectedPlatform, pin, r
   const markers = useMemo(
     () =>
       stops.flatMap((s) => {
-        const pts = s.platforms.length
-          ? s.platforms
-          : s.latitude != null ? [{ latitude: s.latitude, longitude: s.longitude as number }] : [];
-        return pts.map((p: any, pi) => {
+        const entries = localPlatformEntries(s);
+        const visiblePoints = entries.length
+          ? entries
+          : s.latitude != null
+            ? [{ point: { latitude: s.latitude, longitude: s.longitude as number }, index: 0 }]
+            : [];
+        return visiblePoints.map(({ point: p, index: pi }) => {
           const own = p.modes ? typesOfMask(p.modes).filter((x) => s.types.includes(x)) : s.types;
           const ty = own.length ? own : s.types;
           return { id: s.id, pi, lat: p.latitude, lng: p.longitude, t: ty.length === 1 ? ty[0] : 'multi' };

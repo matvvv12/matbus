@@ -13,7 +13,7 @@ import { withAlpha } from '../theme/themes';
 import { loadTransitData } from '../data/dataSource';
 import { TRANSPORT_META, TransportType } from '../models/transport';
 import { Stop } from '../models/stop';
-import { distanceMeters, formatDistance } from '../services/geo';
+import { distanceMeters, formatDistance, localPlatformEntries } from '../services/geo';
 import { formatTime, nextDepartures } from '../services/schedule';
 import { useUserLocation } from '../hooks/useUserLocation';
 import { GlassButton } from '../components/Glass';
@@ -89,8 +89,9 @@ export default function MapScreen({
     if (!anchor) return [];
     return mappedStops
       .map((stop) => {
-        const points = stop.platforms.length ? stop.platforms : [{ latitude: stop.latitude as number, longitude: stop.longitude as number }];
-        const dist = Math.min(...points.map((point) => distanceMeters(anchor, point)));
+        const points = localPlatformEntries(stop).map(({ point }) => point);
+        const candidates = points.length ? points : [{ latitude: stop.latitude as number, longitude: stop.longitude as number }];
+        const dist = Math.min(...candidates.map((point) => distanceMeters(anchor, point)));
         return { stop, dist };
       })
       .sort((a, b) => a.dist - b.dist)
@@ -103,7 +104,9 @@ export default function MapScreen({
   const [previewGeometry, setPreviewGeometry] = useState<RouteGeometry | null>(null);
 
   const focusPlatform = useCallback((stop: Stop, pi: number) => {
-    const p = stop.platforms[pi] ?? (hasCoords(stop) ? { latitude: stop.latitude as number, longitude: stop.longitude as number } : null);
+    const entries = localPlatformEntries(stop);
+    const selected = entries.find((entry) => entry.index === pi) ?? entries[0];
+    const p = selected?.point ?? (hasCoords(stop) ? { latitude: stop.latitude as number, longitude: stop.longitude as number } : null);
     if (p) setFocus({ latitude: p.latitude, longitude: p.longitude, nonce: Date.now() });
   }, []);
 
@@ -115,13 +118,14 @@ export default function MapScreen({
   const onMapInteraction = useCallback(() => setFollowUser(false), []);
 
   const select = useCallback((stop: Stop, pi?: number) => {
-    let idx = pi ?? 0;
+    const entries = localPlatformEntries(stop);
+    let idx = entries.find((entry) => entry.index === pi)?.index ?? entries[0]?.index ?? 0;
     const loc = locRef.current;
-    if (pi == null && loc && stop.platforms.length > 1) {
+    if (pi == null && loc && entries.length > 1) {
       let best = Infinity;
-      stop.platforms.forEach((pl, i) => {
-        const d = distanceMeters(loc, pl);
-        if (d < best) { best = d; idx = i; }
+      entries.forEach(({ point, index }) => {
+        const d = distanceMeters(loc, point);
+        if (d < best) { best = d; idx = index; }
       });
     }
     setRoutePreview(null);
@@ -408,10 +412,15 @@ export default function MapScreen({
             stop={selected}
             data={data}
             now={now}
-            isFavorite={isFavorite(selected.id)}
+            isFavorite={[selected.id, ...(selected.aliases ?? [])].some(isFavorite)}
             platformIdx={selectedPi}
             onSelectPlatform={(pi) => { setSelectedPi(pi); focusPlatform(selected, pi); }}
-            onToggleFavorite={() => toggle(selected.id)}
+            onToggleFavorite={() => {
+              const ids = [selected.id, ...(selected.aliases ?? [])];
+              const savedIds = ids.filter(isFavorite);
+              if (savedIds.length) savedIds.forEach(toggle);
+              else toggle(selected.id);
+            }}
             onClose={() => setSelectedId(null)}
             onOpenRoute={openRoutePreview}
           />

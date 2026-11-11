@@ -3,7 +3,7 @@ import path from 'node:path';
 
 const file = path.resolve('src/data/vitebsk.json');
 if (!fs.existsSync(file)) {
-  console.error('Не найден src/data/vitebsk.json');
+  console.error('Не найден src/data/vitebsk.json. Запустите команду из корня matbus.');
   process.exit(1);
 }
 
@@ -11,101 +11,223 @@ const data = JSON.parse(fs.readFileSync(file, 'utf8'));
 const stops = Array.isArray(data.stops) ? data.stops : [];
 const routes = Array.isArray(data.routes) ? data.routes : [];
 const timetables = Array.isArray(data.timetables) ? data.timetables : [];
-const rawPlatformCount = stops.reduce((sum, stop) => sum + (stop.platforms || []).length, 0);
-const dedupedPlatformCount = stops.reduce((sum, stop) => {
-  const merged = [];
-  for (const point of stop.platforms || []) {
-    const candidate = { latitude: point[0], longitude: point[1], modes: point[2] || 0 };
-    const distance = (a, b) => Math.hypot(
-      (a.latitude - b.latitude) * 110540,
-      (a.longitude - b.longitude) * 111320 * Math.cos(a.latitude * Math.PI / 180)
-    );
-    const hit = merged.find((item) => distance(item, candidate) <= 12);
-    if (!hit) {
-      merged.push({ ...candidate, count: 1 });
-      continue;
-    }
-    hit.count += 1;
-    hit.latitude += (candidate.latitude - hit.latitude) / hit.count;
-    hit.longitude += (candidate.longitude - hit.longitude) / hit.count;
-    hit.modes |= candidate.modes;
-  }
-  return sum + merged.length;
-}, 0);
-const stopIds = new Set();
-const routeIds = new Set();
+const validTypes = new Set(['bus', 'trolleybus', 'tram', 'minibus']);
+const validDays = new Set(['weekday', 'saturday', 'sunday']);
 const errors = [];
-const missingCoords = [];
-const stopTypes = new Map();
+const warnings = [];
+const bySourceId = new Map();
+const routeById = new Map();
+const normalizeId = (value) => String(value ?? '').trim();
+const normalizeName = (value) => String(value ?? '').toLowerCase().replace(/ё/g, 'е')
+  .replace(/^\s*(?:ул\.?|улица)\s+/u, '')
+  .replace(/[^a-zа-я0-9]+/gu, ' ').trim().replace(/\s+/g, ' ');
 
-for (const stop of stops) {
-  const id = String(stop.id);
-  if (stopIds.has(id)) errors.push(`Дублируется ID остановки: ${id}`);
-  stopIds.add(id);
-  (stop.types || []).forEach((type) => {
-    if (!stopTypes.has(type)) stopTypes.set(type, 0);
-    stopTypes.set(type, stopTypes.get(type) + 1);
-  });
+const distance = (a, b) => {
+  const lat = (a.latitude + b.latitude) / 2;
+  return Math.hypot(
+    (a.latitude - b.latitude) * 110540,
+    (a.longitude - b.longitude) * 111320 * Math.cos(lat * Math.PI / 180),
+  );
+};
+const platformPoints = (stop) => (stop.platforms || [])
+  .filter((point) => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+  .map((point) => ({ latitude: point[0], longitude: point[1] }));
 
-  const validPair = Number.isFinite(stop.lat) && Number.isFinite(stop.lng);
-  if (validPair) {
-    if (stop.lat < 54 || stop.lat > 56 || stop.lng < 29 || stop.lng > 31) {
-      errors.push(`Координаты остановки вне контрольного диапазона Витебской области: ${stop.name} (${stop.lat}, ${stop.lng})`);
-    }
-  } else {
-    missingCoords.push(stop.name);
-    if (stop.lat != null || stop.lng != null) errors.push(`Неполная пара координат у остановки: ${stop.name}`);
-  }
-
-  for (const point of stop.platforms || []) {
-    if (!Array.isArray(point) || point.length < 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
-      errors.push(`Некорректная платформа у остановки: ${stop.name}`);
-      continue;
-    }
-    if (point[0] < 54 || point[0] > 56 || point[1] < 29 || point[1] > 31) {
-      errors.push(`Координаты платформы вне контрольного диапазона: ${stop.name}`);
-    }
-  }
+function samePlatformFootprint(a, b) {
+  const left = platformPoints(a);
+  const right = platformPoints(b);
+  if (!left.length || !right.length) return false;
+  const matches = (x, y) => x.filter((point) => y.some((candidate) => distance(point, candidate) <= 4)).length;
+  const matched = Math.min(matches(left, right), matches(right, left));
+  return matched / Math.max(left.length, right.length) >= 0.8;
 }
+
+// Same stop name + centre + platform footprint is a feed duplicate, not two stops.
+const duplicateGroups = [];
+const groups = [];
+for (const stop of stops) {
+  const id = normalizeId(stop.id);
+  if (!id) errors.push(`Пустой ID остановки: ${stop.name}`);
+  if (bySourceId.has(id)) errors.push(`Повтор ID остановки ${id}: ${stop.name}`);
+  bySourceId.set(id, stop);
+
+  const name = normalizeName(stop.name);
+  const group = groups.find((candidate) => {
+    const other = candidate[0];
+    if (!name || name !== normalizeName(other.name)) return false;
+    if (![stop.lat, stop.lng, other.lat, other.lng].every(Number.isFinite)) return false;
+    const a = { latitude: stop.lat, longitude: stop.lng };
+    const b = { latitude: other.lat, longitude: other.lng };
+    return distance(a, b) <= 5 && samePlatformFootprint(stop, other);
+  });
+  if (group) group.push(stop);
+  else groups.push([stop]);
+}
+for (const group of groups) if (group.length > 1) duplicateGroups.push(group);
+
+const canonicalBySourceId = new Map();
+for (const group of groups) {
+  const canonical = group[0];
+  for (const stop of group) canonicalBySourceId.set(normalizeId(stop.id), normalizeId(canonical.id));
+}
+const canonicalId = (id) => canonicalBySourceId.get(normalizeId(id)) ?? normalizeId(id);
+const canonicalStopIds = new Set(groups.map((group) => normalizeId(group[0].id)));
+const routeTypesByStop = new Map();
+const routeIdsByStop = new Map();
+let emptyDirections = 0;
+let unknownRouteStopReferences = 0;
+let rawAdjacentDuplicateStopReferences = 0;
+let aliasAdjacentDuplicateStopReferences = 0;
 
 for (const route of routes) {
-  if (routeIds.has(route.id)) errors.push(`Дублируется ID маршрута: ${route.id}`);
-  routeIds.add(route.id);
+  const routeId = normalizeId(route.id);
+  if (!routeId) errors.push(`Пустой ID маршрута: ${route.number}`);
+  if (routeById.has(routeId)) errors.push(`Повтор ID маршрута: ${routeId}`);
+  routeById.set(routeId, route);
+  if (!validTypes.has(route.type)) errors.push(`Неизвестный тип транспорта у маршрута ${route.number}: ${route.type}`);
+
   for (const direction of route.directions || []) {
-    for (const stopId of direction.stopIds || []) {
-      if (!stopIds.has(String(stopId))) errors.push(`Маршрут ${route.number} ссылается на неизвестную остановку ${stopId}`);
+    const rawIds = direction.stopIds || [];
+    const ids = rawIds.map(canonicalId);
+    if (!ids.length) emptyDirections++;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      if (i > 0 && ids[i] === ids[i - 1]) {
+        // Existing repeated IDs are source-data warnings; only a newly collapsed
+        // pair of different source IDs indicates an unsafe alias merge.
+        if (normalizeId(rawIds[i]) === normalizeId(rawIds[i - 1])) rawAdjacentDuplicateStopReferences++;
+        else aliasAdjacentDuplicateStopReferences++;
+        continue;
+      }
+      if (!canonicalStopIds.has(id)) {
+        errors.push(`Маршрут ${route.number} ссылается на неизвестную остановку ${direction.stopIds[i]}`);
+        unknownRouteStopReferences++;
+        continue;
+      }
+      if (!routeTypesByStop.has(id)) routeTypesByStop.set(id, new Set());
+      routeTypesByStop.get(id).add(route.type);
+      if (!routeIdsByStop.has(id)) routeIdsByStop.set(id, new Set());
+      routeIdsByStop.get(id).add(routeId);
     }
   }
 }
 
+const missingTypes = [];
+const invalidCoordinates = [];
+const distantPlatforms = [];
+const duplicateNames = new Map();
+for (const group of groups) {
+  const stop = group[0];
+  const id = normalizeId(stop.id);
+  const name = normalizeName(stop.name);
+  if (!duplicateNames.has(name)) duplicateNames.set(name, []);
+  duplicateNames.get(name).push(stop);
+  const mergedTypes = new Set(group.flatMap((item) => Array.isArray(item.types) ? item.types : []));
+  const missing = [...(routeTypesByStop.get(id) || [])].filter((type) => !mergedTypes.has(type));
+  if (missing.length) missingTypes.push(`${stop.name} [${id}]: ${missing.join(', ')}`);
+  if (stop.lat != null || stop.lng != null) {
+    if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)) {
+      invalidCoordinates.push(`${stop.name} [${id}]: неполная пара координат`);
+    } else if (stop.lat < 54 || stop.lat > 56 || stop.lng < 29 || stop.lng > 31) {
+      invalidCoordinates.push(`${stop.name} [${id}]: координаты вне Витебска (${stop.lat}, ${stop.lng})`);
+    }
+  }
+  if (Number.isFinite(stop.lat) && Number.isFinite(stop.lng)) {
+    (stop.platforms || []).forEach((point, index) => {
+      if (!Array.isArray(point) || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+      const metres = distance(
+        { latitude: stop.lat, longitude: stop.lng },
+        { latitude: point[0], longitude: point[1] },
+      );
+      if (metres > 250) distantPlatforms.push(`${stop.name} [${id}], платформа ${index}: ${Math.round(metres)} м от центра`);
+    });
+  }
+}
+const ambiguousSameName = [...duplicateNames.entries()]
+  .filter(([name, same]) => name && same.length > 1)
+  .map(([name, same]) => `${name}: ${same.map((stop) => `${stop.name} [${stop.id}]`).join(' | ')}`);
+
+const timetableWithoutRoute = [];
+const timetableWithoutStop = [];
+const routeStopWithoutTimetable = [];
+const unknownDays = [];
+const invalidTimes = [];
+const timetableByStopRoute = new Set();
 for (const entry of timetables) {
-  if (!stopIds.has(String(entry.stopId))) errors.push(`Расписание ссылается на неизвестную остановку ${entry.stopId}`);
-  if (!routeIds.has(entry.routeId)) errors.push(`Расписание ссылается на неизвестный маршрут ${entry.routeId}`);
-  if (!Array.isArray(entry.times) || entry.times.some((t) => !Number.isFinite(t) || t < 0)) {
-    errors.push(`Некорректные времена у ${entry.routeId} на остановке ${entry.stopId}`);
+  const stopId = canonicalId(entry.stopId);
+  const routeId = normalizeId(entry.routeId);
+  if (!bySourceId.has(normalizeId(entry.stopId))) timetableWithoutStop.push(entry);
+  if (!routeById.has(routeId)) timetableWithoutRoute.push(entry);
+  if (!validDays.has(entry.day)) unknownDays.push(entry);
+  if (!Array.isArray(entry.times) || entry.times.some((time) => !Number.isFinite(time) || time < 0)) invalidTimes.push(entry);
+  timetableByStopRoute.add(`${stopId}|${routeId}`);
+}
+for (const [stopId, routeIds] of routeIdsByStop) {
+  for (const routeId of routeIds) {
+    if (!timetableByStopRoute.has(`${stopId}|${routeId}`)) routeStopWithoutTimetable.push(`${stopId} → ${routeId}`);
   }
 }
 
+const coordinatesAvailable = groups.map((group) => group[0]).filter((stop) =>
+  Number.isFinite(stop.lat) && Number.isFinite(stop.lng)
+).length;
 const routeTypeCounts = routes.reduce((acc, route) => {
   acc[route.type] = (acc[route.type] || 0) + 1;
   return acc;
 }, {});
-const modeLabels = { bus: 'автобусных', trolleybus: 'троллейбусных', tram: 'трамвайных', minibus: 'маршрутных' };
+const typeLabels = { bus: 'автобусов', trolleybus: 'троллейбусов', tram: 'трамваев', minibus: 'маршруток' };
 
-console.log(`Источник: ${data.meta?.source || 'не указан'}`);
-console.log(`Снимок данных: ${data.meta?.fetchedAt || 'не указан'}`);
-console.log(`Остановок: ${stops.length} (${stops.length - missingCoords.length} с координатами, ${missingCoords.length} без координат)`);
-console.log(`Маршрутов: ${routes.length} (${Object.entries(routeTypeCounts).map(([type, count]) => `${count} ${modeLabels[type] || type}`).join(', ')})`);
-console.log(`Записей расписания: ${timetables.length}`);
-console.log(`Точек платформ: ${rawPlatformCount}; после объединения дублей в радиусе 12 м: ${dedupedPlatformCount}`);
-console.log(`Типы, отмеченные в остановках: ${Array.from(stopTypes, ([type, count]) => `${type}: ${count}`).join(', ')}`);
-if (missingCoords.length) {
-  console.log('\nОстановки без проверенных координат (остаются в поиске и расписании):');
-  missingCoords.forEach((name) => console.log(`  • ${name}`));
-}
-if (errors.length) {
-  console.error(`\nОшибки структуры данных: ${errors.length}`);
-  errors.slice(0, 50).forEach((error) => console.error(`  ✕ ${error}`));
+const report = [
+  'MATBUS · ЦЕЛОСТНОСТЬ ТРАНСПОРТНЫХ ДАННЫХ',
+  `Источник остановок и расписаний: ${data.meta?.source || 'не указан'}`,
+  `Снимок данных: ${data.meta?.fetchedAt || 'не указан'}`,
+  `Сырых записей остановок: ${stops.length}`,
+  `Физических остановок после безопасного объединения дублей: ${groups.length}`,
+  `Подтверждённых групп дублей: ${duplicateGroups.length}`,
+  `Маршрутов: ${routes.length} (${Object.entries(routeTypeCounts).map(([type, count]) => `${count} ${typeLabels[type] || type}`).join(', ')})`,
+  `Записей расписания: ${timetables.length}`,
+  `Остановок с координатами: ${coordinatesAvailable}/${groups.length}`,
+  '',
+  'ПОДТВЕРЖДЁННЫЕ ДУБЛИ ОСТАНОВОК:',
+  ...(duplicateGroups.length ? duplicateGroups.map((group) => group.map((stop) => `${stop.name} [${stop.id}]`).join(' = ')) : ['нет']),
+  '',
+  'ОДИНАКОВЫЕ НАЗВАНИЯ, КОТОРЫЕ НЕЛЬЗЯ АВТОМАТИЧЕСКИ СКЛЕИВАТЬ:',
+  ...(ambiguousSameName.length ? ambiguousSameName : ['нет']),
+  '',
+  'ОСТАНОВКИ БЕЗ КООРДИНАТ:',
+  ...groups.map((group) => group[0]).filter((stop) => !Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)).map((stop) => `${stop.name} [${stop.id}]`),
+  '',
+  'ТИПЫ ТРАНСПОРТА, ОТСУТСТВУЮЩИЕ В КАТАЛОГЕ ОСТАНОВКИ:',
+  ...(missingTypes.length ? missingTypes : ['нет']),
+  '',
+  'МАРШРУТНЫЕ ОСТАНОВКИ БЕЗ РАСПИСАНИЯ:',
+  ...(routeStopWithoutTimetable.length ? routeStopWithoutTimetable : ['нет']),
+  '',
+  'ОШИБКИ ССЫЛОК И РАСПИСАНИЯ:',
+  `маршруты с неизвестными остановками: ${unknownRouteStopReferences}`,
+  `расписание без маршрута: ${timetableWithoutRoute.length}`,
+  `расписание без остановки: ${timetableWithoutStop.length}`,
+  `некорректные дни недели: ${unknownDays.length}`,
+  `некорректные времена: ${invalidTimes.length}`,
+  `пустые направления маршрутов: ${emptyDirections}`,
+  `соседние повторы уже в исходном источнике (предупреждение): ${rawAdjacentDuplicateStopReferences}`,
+  `соседние повторы, появившиеся из-за объединения разных ID (ошибка): ${aliasAdjacentDuplicateStopReferences}`,
+  '',
+  'НЕКОРРЕКТНЫЕ КООРДИНАТЫ:',
+  ...(invalidCoordinates.length ? invalidCoordinates : ['нет']),
+  '',
+  'ПЛАТФОРМЫ ДАЛЬШЕ 250 М ОТ ЦЕНТРА ОСТАНОВКИ (ПРОВЕРИТЬ ИСТОЧНИК):',
+  ...(distantPlatforms.length ? distantPlatforms : ['нет']),
+].join('\n');
+
+console.log(report);
+fs.writeFileSync(path.resolve('tools/audit-data-report.txt'), report, 'utf8');
+
+const failed = errors.length || missingTypes.length || timetableWithoutRoute.length ||
+  timetableWithoutStop.length || unknownDays.length || invalidTimes.length ||
+  routeStopWithoutTimetable.length || invalidCoordinates.length || aliasAdjacentDuplicateStopReferences;
+if (failed) {
+  console.error('Проверка завершена с ошибками. Подробный отчёт: tools/audit-data-report.txt');
   process.exit(1);
 }
-console.log('\nСтруктурная проверка пройдена. Отсутствующие координаты указаны отдельно и не подменяются догадками.');
+console.log('Структурная проверка пройдена. Неоднозначные совпадения названий перечислены отдельно.');
